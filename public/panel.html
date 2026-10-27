@@ -1,0 +1,1694 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>小鲸鱼控制台</title>
+<style>
+  :root{
+    --card:#fff; --ink:#14344a; --muted:#6b8ea3; --line:#e2eef5;
+    --whale:#3aa7d6; --deep:#1b6f9c; --coral:#ff7a6b; --ok:#2fbf8f; --off:#c7d6df;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;color:var(--ink);font:14px/1.6 "微软雅黑","Microsoft YaHei",-apple-system,"Segoe UI",sans-serif;
+    background:
+      radial-gradient(1200px 500px at 10% -10%, #dff2fe 0%, transparent 60%),
+      radial-gradient(900px 420px at 100% 0%, #e6fbf3 0%, transparent 55%),
+      linear-gradient(180deg,#f7fbfe 0%,#f2f8fb 100%);
+    min-height:100%;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:26px 22px 60px}
+  header{
+    position:relative;background:linear-gradient(120deg,#3aa7d6 0%,#2f8fc9 45%,#4cc4b0 100%);
+    color:#fff;border-radius:20px;padding:26px 30px 34px;overflow:hidden;
+    box-shadow:0 12px 30px rgba(46,128,178,.22);
+  }
+  header .wave{position:absolute;left:0;right:0;bottom:-2px;height:46px;opacity:.9}
+  .brand{display:flex;align-items:center;gap:14px}
+  .logo{width:64px;height:64px;border-radius:18px;background:rgba(255,255,255,.22);display:grid;place-items:center;font-size:27px;border:1px solid rgba(255,255,255,.35)}
+  h1{margin:0;font-size:23px;letter-spacing:.5px}
+  .sub{opacity:.9;font-size:12.5px;margin-top:2px}
+  .head-right{position:absolute;right:26px;top:26px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+  .chip{background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.32);border-radius:999px;padding:5px 12px;font-size:12px;white-space:nowrap}
+
+  .nav{display:flex;gap:8px;margin:16px 0 12px;flex-wrap:wrap}
+  .nav button{border-radius:999px;padding:8px 18px;font-size:13px;border:1px solid var(--line);background:#fff;color:var(--muted);cursor:pointer}
+  .nav button.active{background:linear-gradient(120deg,#3aa7d6,#4cc4b0);color:#fff;border:0;font-weight:600}
+
+  .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px 18px 16px;box-shadow:0 6px 18px rgba(31,95,158,.06);transition:.18s}
+  .card:hover{transform:translateY(-2px);box-shadow:0 12px 26px rgba(31,95,158,.12)}
+  .card .top{display:flex;align-items:center;gap:10px}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--off);flex:0 0 auto;position:relative}
+  .dot.on{background:var(--ok);box-shadow:0 0 0 4px rgba(47,191,143,.16)}
+  .dot.on::after{content:'';position:absolute;inset:0;border-radius:50%;background:var(--ok);animation:pulse 1.8s infinite}
+  @keyframes pulse{0%{transform:scale(1);opacity:.7}70%{transform:scale(2.4);opacity:0}100%{opacity:0}}
+  .svc-name{font-weight:700;font-size:15.5px}
+  .svc-desc{font-size:12px;color:var(--muted);margin-left:auto}
+  .port{font-family:Consolas,monospace;font-size:12px;color:var(--muted);margin-top:8px}
+  .state{font-size:12.5px;margin-top:6px;color:#b7c7d2}
+  .state.on{color:var(--ok)}
+  .btns{display:flex;gap:8px;margin-top:12px}
+
+  button{font:inherit;font-size:12.5px;border-radius:10px;border:1px solid var(--line);background:#f6fbfe;color:var(--deep);padding:7px 13px;cursor:pointer;transition:.15s}
+  button:hover{background:#e9f5fd;border-color:#c9e6f7}
+  button.primary{background:linear-gradient(120deg,#3aa7d6,#4cc4b0);color:#fff;border:0;font-weight:600}
+  button.danger{color:var(--coral);border-color:#ffd9d3;background:#fff7f5}
+  button.mini{padding:3px 9px;font-size:11.5px;border-radius:8px}
+
+  .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#fff;border:1px solid var(--line);border-radius:16px;padding:12px 16px;margin-top:16px;box-shadow:0 4px 14px rgba(31,95,158,.05)}
+  .bar .spacer{flex:1}
+  .hint{font-size:12px;color:var(--muted)}
+
+  .grid{display:grid;grid-template-columns:1.1fr .9fr;gap:16px;margin-top:16px}
+  .panel{background:#fff;border:1px solid var(--line);border-radius:18px;padding:18px 20px;box-shadow:0 4px 14px rgba(31,95,158,.05)}
+  .panel h2{margin:0 0 12px;font-size:14.5px;color:var(--deep);display:flex;align-items:center;gap:8px}
+  .panel h2 .tag{font-size:11px;font-weight:400;color:var(--muted);background:#f2f8fc;border-radius:999px;padding:2px 9px}
+  .stats{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+  .stat{background:linear-gradient(180deg,#f7fcff,#eff8fd);border:1px solid #e8f3fa;border-radius:12px;padding:10px 8px;text-align:center}
+  .stat b{display:block;font-size:19px;color:var(--deep);line-height:1.2}
+  .stat span{font-size:11px;color:var(--muted)}
+  .list{margin:12px 0 0;padding:0;list-style:none}
+  .list li{font-size:12.4px;color:#31556b;padding:6px 0;border-bottom:1px dashed #eef4f8;display:flex;gap:8px}
+  .list li:last-child{border-bottom:0}
+  .list li .k{color:var(--muted);flex:0 0 auto}
+  .switches{display:flex;flex-wrap:wrap;gap:8px}
+  .sw{font-size:12px;border-radius:999px;padding:5px 11px;background:#f3faf7;color:#1d8a68;border:1px solid #d8f0e6}
+  .sw.off{background:#f7f9fb;color:#9db0bd;border-color:#e8eef3}
+  .topic{font-size:12.4px;color:#31556b;background:#f6fbfd;border-radius:10px;padding:8px 11px;margin-bottom:8px}
+
+  .logs{margin-top:16px;background:#fff;border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 4px 14px rgba(31,95,158,.05)}
+  .tabs{display:flex;gap:4px;padding:10px 12px 0;background:linear-gradient(180deg,#fbfdff,#f6fbfe);border-bottom:1px solid var(--line)}
+  .tab{font-size:12.5px;padding:7px 14px;border-radius:10px 10px 0 0;cursor:pointer;color:var(--muted);border:1px solid transparent;border-bottom:0}
+  .tab.active{background:#fff;color:var(--deep);font-weight:600;border-color:var(--line)}
+  pre{margin:0;padding:14px 16px;max-height:300px;overflow:auto;font:12px/1.65 Consolas,"Cascadia Mono",monospace;color:#33566c;background:#fff}
+  pre .t{color:#9fb4c2}
+
+  .field{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px dashed #eef4f8}
+  .field:last-child{border-bottom:0}
+  .field label{flex:0 0 132px;font-size:12.8px;color:#41627a}
+  .field .val{flex:1;display:flex;align-items:center;gap:10px}
+  select,input[type=text],input[type=number]{font:inherit;font-size:12.8px;padding:6px 10px;border:1px solid var(--line);border-radius:9px;background:#fbfdff;color:var(--ink);min-width:150px}
+  input[type=range]{flex:1;accent-color:#3aa7d6}
+  .num{font-family:Consolas,monospace;font-size:12px;color:var(--muted);min-width:46px;text-align:right}
+
+  .mem-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px}
+  .mem-item{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px dashed #eef4f8;font-size:12.6px;color:#31556b}
+  .mem-item .txt{flex:1}
+  .mem-item .meta{font-size:11px;color:var(--muted);font-family:Consolas,monospace;white-space:nowrap}
+  .mem-tabs{display:flex;gap:6px;margin:6px 0 10px;flex-wrap:wrap}
+  .mem-tabs button{font-size:12px;padding:5px 12px;border-radius:999px}
+  .mem-tabs button.active{background:#e9f5fd;border-color:#c9e6f7;color:var(--deep);font-weight:600}
+
+  .frame-wrap{background:#fff;border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 4px 14px rgba(31,95,158,.05);margin-top:16px}
+  .frame-bar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#fbfdff,#f5fafd)}
+  .frame-bar .title{font-size:13px;color:var(--deep);font-weight:600}
+  .frame-bar .spacer{flex:1}
+  iframe{width:100%;height:calc(100vh - 300px);min-height:520px;border:0;display:block;background:#f4f8fb}
+
+  .modal{position:fixed;inset:0;background:rgba(20,52,74,.45);display:none;align-items:center;justify-content:center;padding:20px;z-index:99;backdrop-filter:blur(2px)}
+  .modal.show{display:flex}
+  .modal .box{background:#fff;border-radius:20px;max-width:660px;width:100%;padding:26px 28px;box-shadow:0 24px 60px rgba(20,52,74,.28);max-height:86vh;overflow:auto}
+  .modal h3{margin:0 0 6px;font-size:18px;color:var(--deep)}
+  .modal .lead{font-size:12.5px;color:var(--muted);margin-bottom:14px}
+  .modal ol{margin:0;padding-left:20px;font-size:13px;color:#31556b;line-height:1.9}
+  .modal .foot{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+
+  .help-md{font-size:13px;color:#33566c;line-height:1.85}
+  .persona-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:10px 0 14px}
+  .p-card{border:1px solid var(--line);border-radius:13px;padding:10px 12px;background:linear-gradient(180deg,#fbfdff,#f4fbff);
+    cursor:pointer;transition:.15s;position:relative;overflow:hidden}
+  .p-card:hover{border-color:#bfe3f6;transform:translateY(-1px);box-shadow:0 6px 16px rgba(31,95,158,.08)}
+  .p-card.active{border-color:#3aa7d6;box-shadow:0 0 0 2px rgba(58,167,214,.14)}
+  .p-card .n{font-size:13px;font-weight:600;color:var(--deep);margin-bottom:3px}
+  .p-card .p{font-size:11.5px;color:var(--muted);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .p-card .badge{position:absolute;top:8px;right:9px;font-size:10px;color:#1b6f9c;background:#e9f5fd;border-radius:999px;padding:1px 6px}
+  .icon-card{border:1px solid var(--line);border-radius:14px;padding:8px;text-align:center;cursor:pointer;background:#fbfdff;transition:.15s}
+  .icon-card:hover{border-color:#bfe3f6;transform:translateY(-1px)}
+  .icon-card.active{border-color:#3aa7d6;box-shadow:0 0 0 2px rgba(58,167,214,.15)}
+  .icon-card img{width:64px;height:64px;display:block;margin:0 auto 4px}
+  .icon-card .n{font-size:11.5px;color:var(--muted)}
+  .env-row{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px dashed #eef4f8;flex-wrap:wrap}
+  .env-row .st{width:18px;flex:0 0 18px;text-align:center}
+  .env-row .nm{font-weight:600;color:#243b55;min-width:150px}
+  .env-row .meta{font-size:12px;color:var(--muted);flex:1;min-width:200px}
+  .env-row .meta b{color:#41627a}
+  .env-row .fix{font-size:12px;color:#8a5a12;background:#fff8ef;border:1px solid #ffe3bd;border-radius:8px;padding:2px 8px}
+  .pl-card{border:1px solid var(--line);border-radius:14px;padding:12px 14px;background:linear-gradient(180deg,#fbfdff,#f6fbff)}
+  .pl-card.on{border-color:#bfe6d6;background:linear-gradient(180deg,#f7fffb,#eefaf4)}
+  .pl-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .pl-head b{font-size:14px;color:var(--deep)}
+  .pl-head .ver{font-size:11.5px;color:var(--muted)}
+  .pl-head .state{font-size:11.5px;border-radius:999px;padding:2px 9px;background:#fdeceb;color:#c9574a}
+  .pl-card.on .pl-head .state{background:#e7f7ef;color:#1d8a68}
+  .pl-desc{font-size:12.6px;color:#41627a;margin:6px 0 8px}
+  .pl-risk{font-size:12px;color:#8a5a12;background:#fff8ef;border:1px solid #ffe3bd;border-radius:10px;padding:7px 10px;margin:6px 0}
+  .pl-actions{display:flex;gap:8px;align-items:center;margin-top:6px}
+  .learn-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin:8px 0}
+  .learn-cat{border:1px solid var(--line);border-radius:12px;padding:8px 10px;background:#fbfdff;text-align:center}
+  .learn-cat .n{font-size:18px;font-weight:600;color:var(--deep)}
+  .learn-cat .k{font-size:11.5px;color:var(--muted)}
+  .learn-item{display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px dashed #eef4f8;font-size:12.6px}
+  .learn-item .tag{flex:0 0 auto}
+  .learn-item .t{flex:1}
+  .learn-item .c{color:var(--muted);font-size:11.5px}
+  .help-md h1{font-size:20px;color:var(--deep);margin:6px 0 12px}
+  .help-md h2{font-size:15.5px;color:var(--deep);margin:20px 0 8px;padding-bottom:6px;border-bottom:1px solid #eef4f8}
+  .help-md h3{font-size:13.5px;color:#243b55;margin:14px 0 6px}
+  .help-md p{margin:8px 0}
+  .help-md ul,.help-md ol{margin:6px 0 10px 4px;padding-left:20px}
+  .help-md code{background:#f3f4f7;border-radius:5px;padding:1px 5px;font-size:12px;color:#b03030}
+  .help-md pre{background:#1e2733;color:#dbe4ee;border-radius:10px;padding:12px 14px;overflow:auto;font-size:12px;line-height:1.6;margin:10px 0}
+  .help-md pre code{background:none;color:inherit;padding:0}
+  .help-md .tbl{overflow-x:auto;margin:10px 0}
+  .help-md table{border-collapse:collapse;width:100%;font-size:12.4px}
+  .help-md th,.help-md td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  .help-md th{background:#f4f7fb;color:#243b55}
+  .help-md strong{color:#12324f}
+  footer{text-align:center;color:#a9c0cf;font-size:11.5px;margin-top:26px}
+  footer a{color:#7fa8c2;text-decoration:none;border-bottom:1px dashed #c3d8e6}
+
+  @media (max-width:1100px){.cards{grid-template-columns:repeat(2,1fr)}}
+  @media (max-width:900px){
+    .cards{grid-template-columns:1fr}
+    .grid{grid-template-columns:1fr}
+    .stats,.mem-grid{grid-template-columns:repeat(3,1fr)}
+    .head-right{position:static;margin-top:14px;justify-content:flex-start}
+  }
+  #brand-logo{display:block;width:100%!important;height:100%!important;object-fit:contain}
+  #brand-logo{transition:transform .15s}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="logo"><img id="brand-logo" src="/assets/icons/cocoa.png" alt="小鲸鱼" style="width:100%;height:100%;object-fit:contain"></div>
+      <div>
+        <h1>小鲸鱼控制台</h1>
+        <div class="sub">QQ 机器人 · 一个页面管全部</div>
+      </div>
+    </div>
+    <div class="head-right">
+      <span class="chip" id="chip-dsh">DSH 连接中…</span>
+      <span class="chip" id="chip-model">模型 —</span>
+      <span class="chip" id="chip-time">—</span>
+      <span class="chip" id="chip-role">—</span>
+      <span class="chip" id="chip-user">—</span>
+      <button class="mini" style="background:rgba(255,255,255,.18);border-color:rgba(255,255,255,.32);color:#fff" onclick="logout()">退出</button>
+    </div>
+    <svg class="wave" viewBox="0 0 1200 60" preserveAspectRatio="none">
+      <path d="M0,32 C150,62 300,2 450,26 C600,50 750,10 900,30 C1050,50 1150,22 1200,30 L1200,60 L0,60 Z" fill="#f7fbfe"/>
+    </svg>
+  </header>
+
+  <div class="nav">
+    <button id="nav-overview" class="active" onclick="showView('overview')">概览</button>
+    <button id="nav-settings" onclick="showView('settings')">设置</button>
+    <button id="nav-memory" onclick="showView('memory')">记忆</button>
+    <button id="nav-snowluma" onclick="showView('snowluma')">SnowLuma 控制台</button>
+    <button id="nav-help" onclick="showView('help')">使用说明</button>
+    <button id="nav-changelog" onclick="showView('changelog')">更新日志</button>
+  </div>
+
+  <div id="view-overview">
+    <div class="cards" id="cards"></div>
+    <div class="bar" id="owner-actions">
+      <button class="primary" onclick="act('start','all')">一键启动全部</button>
+      <button onclick="act('start','bridge')">只启动桥接</button>
+      <button class="danger" onclick="act('stop','bridge')">停止桥接</button>
+      <button class="danger" onclick="act('stop','all')">全部停止</button>
+      <div class="spacer"></div>
+      <span class="hint" id="msg">就绪</span>
+      <button onclick="refresh(true)">刷新</button>
+    </div>
+    <div class="grid">
+      <section class="panel">
+        <h2 id="stats-title">运行指标 <span class="tag">累计 / 最近 24 小时</span></h2>
+        <div class="stats" id="stats-row"></div>
+        <ul class="list" id="stats-list"></ul>
+      </section>
+      <section class="panel">
+        <h2>语境 <span class="tag">当前在聊什么</span></h2>
+        <div id="ctx-list"></div>
+        <h2 style="margin-top:16px">开关</h2>
+        <div class="switches" id="switches"></div>
+      </section>
+    </div>
+    <section class="logs">
+      <div class="tabs">
+        <div class="tab active" data-tab="bridge" onclick="switchTab('bridge')">桥接日志</div>
+        <div class="tab" data-tab="watchdog" onclick="switchTab('watchdog')">守护日志</div>
+        <div class="tab" data-tab="panel" onclick="switchTab('panel')">面板日志</div>
+      </div>
+      <pre id="log"></pre>
+    </section>
+  </div>
+
+  <div id="view-settings" style="display:none">
+    <!-- 普通账户看到的：自己的设置 -->
+    <section class="panel" id="profile-box" style="display:none"></section>
+
+    <!-- 开发者看到的：全局配置 -->
+    <div class="grid" id="owner-settings">
+      <section class="panel">
+        <h2>模型与性能</h2>
+        <div class="field"><label>模型</label><div class="val"><select id="cfg-model"></select><span class="hint" id="model-hint"></span></div></div>
+        <div class="field"><label>思考强度</label><div class="val"><select id="cfg-effort">
+          <option value="low">low（快，答得浅）</option>
+          <option value="high">high（推荐）</option>
+          <option value="max">max（最慢最准）</option>
+        </select></div></div>
+        <div class="field"><label>搜索来源</label><div class="val"><select id="cfg-search">
+          <option value="auto">auto（DeepSeek 优先，Bing 兜底）</option>
+          <option value="deepseek">只用 DeepSeek</option>
+          <option value="bing">只用 Bing</option>
+        </select></div></div>
+        <div class="field"><label>API 地址</label><div class="val"><input type="text" id="cfg-baseurl" readonly><span class="hint">由 DSH 自动探测</span></div></div>
+        <div class="field"><label>API Key</label><div class="val"><input type="text" id="cfg-keyenv" readonly><span class="hint">读环境变量，不写明文</span></div></div>
+        <h2 style="margin-top:20px">人格卡 <span class="tag">可自设</span></h2>
+        <div class="field">
+          <label>当前人格</label>
+          <div class="val">
+            <select id="cfg-persona" style="flex:1"></select>
+            <button class="mini" onclick="personaNew()">新建</button>
+            <button class="mini danger" onclick="personaDelete()">删除</button>
+          </div>
+        </div>
+        <div class="persona-cards" id="persona-cards"></div>
+        <div class="field" id="persona-editor">
+          <label>人格卡内容 <span class="hint" id="persona-status"></span></label>
+          <div class="val">
+            <textarea id="persona-text" rows="9" placeholder="直接写人格设定，比如：&#10;你叫小鲸鱼，说话简短、偶尔傲娇。&#10;喜欢用「哼」「才不是」这类口头禅。&#10;不要长篇大论，一次说一两句。"></textarea>
+          </div>
+        </div>
+        <div class="field">
+          <label>卡名</label>
+          <div class="val">
+            <input type="text" id="persona-name" placeholder="新卡名字（改动它=另存为新卡）" style="max-width:240px">
+          </div>
+        </div>
+        <div class="val" style="margin-top:8px">
+          <button class="primary" onclick="personaSave()">保存</button>
+          <button class="ghost" onclick="personaSaveAs()">另存为新卡</button>
+          <button class="mini" id="persona-sync-btn" onclick="personaSyncSettings()">重分析设定</button>
+          <span class="hint" id="persona-msg">保存后下一条消息就生效</span>
+        </div>
+        <p class="hint" style="margin:8px 0 0">人格卡是 <code>roles/</code> 下的 .md 文件；自设的卡也是普通文件，可以随时改、随时删。</p>
+        <p class="hint" id="persona-setting-stat" style="margin:4px 0 0"></p>
+      </section>
+      <section class="panel">
+        <h2>行为</h2>
+        <div class="field"><label>群聊触发</label><div class="val"><select id="cfg-trigger">
+          <option value="smart">smart（模型判断）</option>
+          <option value="mention">mention（只接点名）</option>
+          <option value="all">all（全接）</option>
+        </select></div></div>
+        <div class="field"><label>受信 QQ 名单</label><div class="val" style="flex-wrap:wrap;gap:6px">
+          <div id="trusted-chips" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+          <input type="text" id="trusted-input" placeholder="输入 QQ 号，回车即加入" style="max-width:200px">
+          <button class="mini" onclick="trustedAdd()">加入</button>
+          <span class="hint">名单里的人群里不用 @ 也回；审批仍只认管理员</span>
+        </div></div>
+        <div class="field"><label>随机插话</label><div class="val"><input type="range" id="cfg-chime" min="0" max="100" step="1"><span class="num" id="chime-num">18%</span></div></div>
+        <div class="field"><label>表达层</label><div class="val"><select id="cfg-expr"><option value="1">开（自己补发表情）</option><option value="0">关</option></select></div></div>
+        <div class="field"><label>表情包概率</label><div class="val"><input type="range" id="cfg-sticker" min="0" max="100" step="1"><span class="num" id="sticker-num">22%</span></div></div>
+        <div class="field"><label>小黄脸概率</label><div class="val"><input type="range" id="cfg-face" min="0" max="100" step="1"><span class="num" id="face-num">12%</span></div></div>
+        <div class="field"><label>内容审核</label><div class="val"><select id="cfg-safety"><option value="1">开</option><option value="0">关</option></select></div></div>
+        <div class="field"><label>压缩阈值</label><div class="val"><input type="number" id="cfg-compress" min="4" max="200" step="2"><span class="hint">超过多少条发言触发摘要</span></div></div>
+      </section>
+    </div>
+    <div class="bar">
+      <button class="primary" onclick="saveSettings()">保存设置</button>
+      <button onclick="restartBridge()">应用并重启桥接</button>
+      <div class="spacer"></div>
+      <span class="hint" id="settings-msg">改完点保存；模型需重启桥接才生效，人格即时生效</span>
+    </div>
+    <section class="panel" style="margin-top:16px" id="devmode-panel">
+      <h2>开发者模式 <span class="tag" id="devmode-tag">—</span></h2>
+      <p class="hint" style="margin:0 0 10px">
+        激活状态是<b>永久</b>的：停用后只能用 <code>开发者模式.ps1</code> 恢复。
+        未激活时开发者入口不可用，普通用户不受影响。
+      </p>
+      <div class="val">
+        <button class="primary" onclick="setDevMode(true)">永久激活</button>
+        <button class="ghost danger" onclick="setDevMode(false)">永久停用</button>
+        <span class="hint" id="devmode-msg"></span>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:16px" id="local-manage">
+      <h2>本地管理 <span class="tag">普通账户的档案</span></h2>
+      <p class="hint" style="margin:0 0 10px">每个普通账户的数据都在 <code>state/profiles/&lt;用户名&gt;.json</code>，这里可以查看、关联 QQ、导入人格、删除。</p>
+      <div id="profiles-list">加载中…</div>
+      <div id="profile-detail" style="margin-top:12px"></div>
+    </section>
+
+    <section class="panel" style="margin-top:16px" id="accounts-panel">
+      <h2>账户 <span class="tag">仅开发者可管理</span></h2>
+      <ul class="list" id="account-list"></ul>
+      <div class="field" style="margin-top:12px">
+        <label>添加普通账户</label>
+        <div class="val">
+          <input type="text" id="acc-user" placeholder="用户名" style="max-width:150px">
+          <input type="password" id="acc-pass" placeholder="密码（≥6 位）" style="max-width:170px">
+          <button class="primary" onclick="addAccount()">添加</button>
+        </div>
+      </div>
+      <p class="hint" style="margin:6px 0 0">普通账户只能看概览/日志/使用说明和 SnowLuma，不能改设置、不能启停服务。</p>
+    </section>
+
+    <section class="panel" style="margin-top:16px" id="ui-panel">
+      <h2>外观 <span class="tag">点一下就能换</span></h2>
+      <p class="hint" style="margin:0 0 10px">换的是面板左上角的小鲸鱼和桌面快捷方式图标。喜欢哪只点哪只，立刻生效。<br>也可以自己丢一张 PNG 到 <code>assets/icons/</code>，刷新后会出现「自定义」图标。</p>
+      <div id="icon-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px"></div>
+      <p class="hint" id="ui-msg" style="margin-top:8px"></p>
+    </section>
+
+    <section class="panel" style="margin-top:16px" id="env-panel">
+      <h2>环境检查 <span class="tag">只扫描，不改任何东西</span></h2>
+      <p class="hint" style="margin:0 0 10px">
+        检查 Node / 依赖 / Python / FFmpeg / SnowLuma / 网关 / DSH / 插件 / 人格卡。
+        只报告缺什么、该装哪个版本、去哪下；<b>不会自动安装，也不会改配置</b>。
+      </p>
+      <div class="val" style="margin-bottom:8px">
+        <button class="primary" onclick="scanEnv(true)">开始扫描</button>
+        <span class="hint" id="env-msg"></span>
+      </div>
+      <div id="env-list"></div>
+    </section>
+
+    <section class="panel" style="margin-top:16px" id="plugins-panel">
+      <h2>插件 <span class="tag">可扩展</span></h2>
+      <div id="plugin-cards" style="display:grid;gap:10px"></div>
+      <div id="learning-box" style="display:none;margin-top:14px"></div>
+      <p class="hint" style="margin-top:10px">把目录放到 <code>plugins/&lt;名字&gt;/</code>，带一个 <code>manifest.json</code> 就会被识别；桥接启动时会加载 <code>index.mjs</code> 里的钩子。</p>
+    </section>
+  </div>
+
+  <div id="view-memory" style="display:none">
+    <section class="panel">
+      <h2>记忆分类 <span class="tag" id="mem-tag">长期 / 短期 / 关键词 / 摘要 / 设定</span></h2>
+
+      <div id="automem-card" style="border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin:8px 0 14px;background:linear-gradient(180deg,#fbfdff,#f6fbff)">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <b style="font-size:13.5px;color:var(--deep)">自主记忆</b>
+          <span class="tag" id="automem-state">—</span>
+          <button class="mini" id="automem-btn" onclick="toggleAutoMem()">切换</button>
+          <span class="hint" id="automem-msg"></span>
+        </div>
+        <p class="hint" style="margin:6px 0 0">
+          开着的时候，它自己判断这句话值不值得记（身份/偏好/约定记长期，近期事实记短期），
+          <b>只往记忆里加事实，不会改人格卡，也不会动「设定」</b>。判断在本地做，不花 token。
+        </p>
+      </div>
+      <div class="mem-grid" id="mem-stats"></div>
+      <div class="mem-tabs" id="mem-tabs" data-counts="">
+        <button class="active" data-tier="long" onclick="memTab('long')">长期事实</button>
+        <button data-tier="short" onclick="memTab('short')">短期事实</button>
+        <button data-tier="keyword" onclick="memTab('keyword')">关键词</button>
+        <button data-tier="summary" onclick="memTab('summary')">会话摘要</button>
+        <button data-tier="setting" onclick="memTab('setting')">设定</button>
+      </div>
+      <div id="mem-body"></div>
+      <div class="field" style="margin-top:14px">
+        <label>手动加一条</label>
+        <div class="val">
+          <input type="text" id="mem-new" placeholder="要记住的事，比如：主人喜欢喝冰美式" style="flex:1">
+          <select id="mem-new-tier"><option value="long">长期</option><option value="short">短期</option></select>
+          <button class="primary" onclick="memAdd()">添加</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div id="view-snowluma" style="display:none">
+    <div class="frame-wrap">
+      <div class="frame-bar">
+        <span class="title">SnowLuma 控制台</span>
+        <span class="hint">内嵌自 127.0.0.1:5099（经面板 5098 反代）</span>
+        <span class="spacer"></span>
+        <button onclick="reloadFrame()">重新加载</button>
+        <button onclick="openFrameExternal()">新窗口打开</button>
+      </div>
+      <iframe id="snowluma-frame" src="about:blank" title="SnowLuma 控制台"></iframe>
+    </div>
+  </div>
+
+  <div id="view-changelog" style="display:none">
+    <section class="panel">
+      <h2>更新日志 <span class="tag">每次改动都记在这里</span></h2>
+      <div id="changelog-body" class="help-md">加载中…</div>
+    </section>
+  </div>
+
+  <div id="view-help" style="display:none">
+    <section class="panel">
+      <h2>使用说明 <span class="tag">点顶部「设置」下方的标签可切换</span></h2>
+      <div id="help-body" class="help-md">加载中…</div>
+    </section>
+  </div>
+
+  <footer>
+    小鲸鱼控制台 · 本地 3200 端口 · 数据每 3 秒刷新 ·
+    <a href="#" onclick="openDisclaimer();return false;">免责声明</a>
+  </footer>
+</div>
+
+<div class="modal" id="force-change">
+    <div class="box" style="max-width:420px">
+      <h3>先设置新密码</h3>
+      <p class="hint" style="margin:0 0 10px">你现在用的是临时密码，改完才能继续用。</p>
+      <div class="field"><label>新密码</label><div class="val"><input type="password" id="fc-pass" placeholder="至少 6 位" style="flex:1"></div></div>
+      <div class="field"><label>再输一次</label><div class="val"><input type="password" id="fc-pass2" placeholder="再输一遍" style="flex:1"></div></div>
+      <div class="val" style="margin-top:14px">
+        <button class="primary" onclick="submitNewPass()">保存新密码</button>
+        <button class="ghost" onclick="logout()">退出登录</button>
+        <span class="hint" id="fc-msg"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="disclaimer">
+  <div class="box">
+    <h3>使用前请读一遍</h3>
+    <div class="lead">这是一个本地运行的个人 QQ 机器人，不是官方产品。</div>
+    <ol>
+      <li><b>AI 生成内容不保证正确。</b>它可能编造事实、说错话、误解你的意思，重要信息请自行核实。</li>
+      <li><b>聊天记录保存在本机。</b>记忆、上下文、日志都写在 <code>state/</code> 目录（明文），请注意隐私。</li>
+      <li><b>不要用于违法或扰人用途。</b>群发、刷屏、冒充他人、规避平台规则等行为与本工具无关，后果自负。</li>
+      <li><b>账号风险自担。</b>第三方协议登录存在被平台风控的可能，使用即表示你了解并接受。</li>
+      <li><b>它会以你的账号发言。</b>请确认你接受它可能说出的内容。</li>
+      <li><b>API 调用费用自付。</b>模型调用按所用平台（如 DeepSeek）的计费规则扣费，费用与用量由你承担；
+        本工具不代收、不退款，也不对账单准确性负责。</li>
+      <li><b>第三方组件版权归各自作者。</b>本项目使用了 SnowLuma、OneBot 实现、ffmpeg、sherpa-onnx、Edge TTS 等组件，
+        它们遵循各自的许可证（如 LGPL/GPL/MIT）；再分发或商用前请自行确认许可证要求，本工具不对第三方组件授权作任何承诺。</li>
+      <li><b>无任何担保。</b>软件按现状提供；数据丢失、服务中断、账号异常等，作者不承担责任。</li>
+    </ol>
+    <div class="foot">
+      <button onclick="closeDisclaimer()">稍后再看</button>
+      <button class="primary" onclick="acceptDisclaimer()">同意并继续</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let state = null, cfg = null, memory = null, stats = null;
+let tab = 'bridge', memTier = 'long';
+const DISCLAIMER_KEY = 'whale-disclaimer-v2';
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const fmtTime = (ms) => new Date(ms).toLocaleTimeString('zh-CN', { hour12: false });
+
+function showView(name) {
+  for (const v of ['overview', 'settings', 'memory', 'snowluma', 'help', 'changelog']) {
+    const el = $('view-' + v);
+    if (el) el.style.display = v === name ? '' : 'none';
+    const btn = $('nav-' + v);
+    if (btn) btn.classList.toggle('active', v === name);
+  }
+  if (name === 'settings') loadSettings();
+  if (name === 'memory') loadMemory();
+  if (name === 'snowluma') loadFrame();
+  if (name === 'help') loadHelp();
+  if (name === 'changelog') loadChangelog();
+  if (name === 'memory') loadAutoMemState();
+  if (name === 'settings') {
+    loadUi();
+    loadPluginsUI();
+    if (!envScanned) scanEnv(false);
+    if (me.isDeveloper) { loadProfiles(); loadDevMode(); }
+  }
+  try { history.replaceState(null, '', name === 'overview' ? '#' : '#' + name); } catch {}
+}
+
+function renderCards() {
+  const order = ['snowluma', 'bridge', 'asr'];
+  const cards = order.map((key) => {
+    const svc = state.services[key];
+    const on = !!state.ports[key];
+    return `<div class="card">
+      <div class="top"><span class="dot ${on ? 'on' : ''}"></span><span class="svc-name">${svc.name}</span><span class="svc-desc">${svc.desc}</span></div>
+      <div class="port">端口 ${svc.port}</div>
+      <div class="state ${on ? 'on' : ''}">${on ? '运行中' : (key === 'snowluma' && state.snowlumaUiUp ? '待登录（在 SnowLuma 标签里扫码）' : '未运行')}</div>
+      <div class="btns"><button onclick="act('start','${key}')">启动</button><button class="danger" onclick="act('stop','${key}')">停止</button></div>
+    </div>`;
+  }).join('');
+  const wd = `<div class="card">
+    <div class="top"><span class="dot ${state.watchdog.alive ? 'on' : ''}"></span><span class="svc-name">守护</span><span class="svc-desc">面板内置</span></div>
+    <div class="port">心跳 ${state.watchdog.beatAge == null ? '—' : state.watchdog.beatAge + ' 秒前'} · 已重启 ${state.watchdog.restarts ?? 0} 次</div>
+    <div class="state ${state.watchdog.alive ? 'on' : ''}">${state.watchdog.alive ? '守护中' : '未运行'}</div>
+    <div class="btns"><button onclick="act('start','watchdog')">启动外部守护</button><button class="danger" onclick="act('stop','watchdog')">停止</button></div>
+  </div>`;
+  $('cards').innerHTML = cards + wd;
+}
+
+function renderMyStats() {
+  const mine = stats?.mine || {};
+  $('stats-row').innerHTML = [
+    ['我的记忆', mine.memory ?? 0],
+    ['受信名单', mine.trusted ?? 0],
+    ['人格字数', mine.personaChars ?? 0],
+  ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+  $('stats-list').innerHTML = `
+    <li><span class="k">触发方式</span><span>${esc(mine.trigger || 'smart')}</span></li>
+    <li><span class="k">随机插话</span><span>${Math.round((mine.chime ?? 0) * 100)}%</span></li>
+    <li><span class="k">模型偏好</span><span>${esc(mine.model || '跟随管理员默认')}</span></li>`;
+}
+
+function renderStats() {
+  if (stats && stats.local) {
+    const t = $('stats-title');
+    if (t) t.innerHTML = '我的数据 <span class="tag">只统计你自己的档案</span>';
+    renderMyStats();
+    return;
+  }
+  if (!stats) return;
+  $('stats-row').innerHTML = [
+    ['最近24h', stats.last24h], ['总回合', stats.turns],
+    ['输入K', Math.round(stats.input / 1000)], ['输出K', Math.round(stats.output / 1000)],
+    ['报错', stats.errors]
+  ].map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('');
+  const hitRate = stats.input ? Math.round((stats.hit / stats.input) * 100) : 0;
+  const models = Object.entries(stats.byModel).map(([m, n]) => `${m} × ${n}`).join(' / ') || '—';
+  $('stats-list').innerHTML = [
+    ['缓存命中', hitRate + '%'],
+    ['模型分布', models],
+    ['最近一次', stats.lastTurnAt ? fmtTime(stats.lastTurnAt) : '—']
+  ].map(([k, v]) => `<li><span class="k">${k}</span><span>${esc(v)}</span></li>`).join('');
+}
+
+function renderContext() {
+  $('ctx-list').innerHTML = state.context.length
+    ? state.context.map((c) => `<div class="topic"><b>${esc(c.key)}</b> · ${c.turns} 条${c.pending ? ` · ${c.pending} 条待回应` : ''}<br><span style="color:#6b8ea3">${esc(c.topic || '（还没形成话题）')}</span></div>`).join('')
+    : '<div class="topic">还没有会话记录</div>';
+  const s = state.switches;
+  const rows = [
+    ['群触发 ' + s.trigger, true], ['插话 ' + Math.round(s.chime * 100) + '%', true],
+    ['表达层', s.expression], ['审核', s.safety], ['压缩', s.compress], ['语音', s.voice]
+  ];
+  $('switches').innerHTML = rows.map(([t, on]) => `<span class="sw ${on ? '' : 'off'}">${esc(t)}</span>`).join('');
+}
+
+function renderLog() {
+  const lines = state.logs[tab] ?? [];
+  $('log').innerHTML = lines.map((l) => esc(l).replace(/^(\[[^\]]+\])/, '<span class="t">$1</span>')).join('\n') || '（暂无日志）';
+  const el = $('log');
+  el.scrollTop = el.scrollHeight;
+}
+
+let autoHealed = false;
+
+async function refresh(manual) {
+  try {
+    state = await (await fetch('/api/status')).json();
+    // 登录后第一次刷新：如果桥接没起来，自动拉起全部（只尝试一次，避免刷屏）
+    if (!autoHealed && state && !state.ports.bridge) {
+      autoHealed = true;
+      fetch('/api/start?target=all', { method: 'POST' }).then(() => setTimeout(() => refresh(false), 6000)).catch(() => {});
+    }
+    renderCards(); renderContext(); renderLog();
+    $('chip-dsh').textContent = state.dsh ? 'DSH ' + state.dsh.replace(/^https?:\/\//, '') : 'DSH 未连接';
+    $('chip-model').textContent = state.model || '模型 —';
+    $('chip-time').textContent = '更新 ' + fmtTime(state.at);
+    if (!window.__whoami) {
+      fetch('/api/auth/status').then((r) => r.json()).then((s) => { window.__whoami = s; const el = $('chip-user'); if (el) el.textContent = s.sessionUser ? ('👤 ' + s.sessionUser) : ''; }).catch(() => {});
+    }
+    if (manual) flash('已刷新');
+  } catch (e) { flash('状态获取失败：' + e.message); }
+  try { stats = await (await fetch('/api/stats')).json(); renderStats(); } catch {}
+}
+
+let msgTimer = null;
+function flash(text, id = 'msg') {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text;
+  clearTimeout(msgTimer);
+  msgTimer = setTimeout(() => { if (id === 'msg') el.textContent = '就绪'; }, 5000);
+}
+
+async function act(action, target) {
+  flash(action === 'start' ? '正在启动…' : '正在停止…');
+  try {
+    const json = await (await fetch(`/api/${action}?target=${target}`, { method: 'POST' })).json();
+    flash(json.msg || (json.ok ? '完成' : '失败'));
+  } catch (e) { flash('操作失败：' + e.message); }
+  setTimeout(() => refresh(false), 1500);
+  setTimeout(() => refresh(false), 5000);
+}
+
+function switchTab(name) {
+  tab = name;
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+  renderLog();
+}
+
+/* ── 设置 ── */
+async function loadSettings() {
+  // 普通账户跳过全局配置：/api/config 对它返回 403，cfg 会是错误对象
+  if (me && !me.isDeveloper) return;
+  try { cfg = await (await fetch('/api/config')).json(); } catch { return; }
+  $('cfg-model').innerHTML = cfg.dsh.models.map((m) => `<option value="${m}">${m}</option>`).join('');
+  $('cfg-model').value = cfg.dsh.model;
+  $('model-hint').textContent = cfg.dsh.model === 'deepseek-flash' ? '快、便宜' : '更聪明、更慢';
+  $('cfg-effort').value = cfg.dsh.reasoningEffort || 'high';
+  $('cfg-search').value = cfg.webSearch.provider || 'auto';
+  $('cfg-baseurl').value = cfg.dsh.baseUrl;
+  $('cfg-keyenv').value = cfg.webSearch.keyEnv ? ('$' + cfg.webSearch.keyEnv) : '（未配置）';
+  $('cfg-persona').innerHTML = cfg.persona.list.map((p) => `<option value="${p}">${p}</option>`).join('');
+  if (cfg.persona.active) $('cfg-persona').value = cfg.persona.active;
+  loadPersonas(false);
+  $('cfg-persona').addEventListener('change', (e) => loadPersonaText(e.target.value));
+  $('cfg-trigger').value = cfg.role.groupTrigger;
+  renderTrusted();
+  $('trusted-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); trustedAdd(); } });
+  const chime = Math.round((cfg.role.chime || 0) * 100);
+  $('cfg-chime').value = chime; $('chime-num').textContent = chime + '%';
+  $('cfg-expr').value = cfg.role.expression?.enabled === false ? '0' : '1';
+  const st = Math.round((cfg.role.expression?.stickerChance ?? 0.22) * 100);
+  $('cfg-sticker').value = st; $('sticker-num').textContent = st + '%';
+  const fc = Math.round((cfg.role.expression?.faceChance ?? 0.12) * 100);
+  $('cfg-face').value = fc; $('face-num').textContent = fc + '%';
+  $('cfg-safety').value = cfg.safety.enabled ? '1' : '0';
+  $('cfg-compress').value = cfg.role.memory?.compressAfterTurns ?? 24;
+  loadPlugins();
+}
+
+['cfg-chime', 'cfg-sticker', 'cfg-face'].forEach((id) => {
+  const el = $(id);
+  if (el) el.addEventListener('input', (e) => { $(id.replace('cfg-', '') + '-num').textContent = e.target.value + '%'; });
+});
+
+async function saveSettings() {
+  const patch = {
+    'dsh.model': $('cfg-model').value,
+    'dsh.reasoningEffort': $('cfg-effort').value,
+    'webSearch.provider': $('cfg-search').value,
+    'role.groupTrigger': $('cfg-trigger').value,
+    'role.developers': (cfg.role.developers || []).filter(Boolean),
+    'role.randomChimeProbability': Number($('cfg-chime').value) / 100,
+    'role.expression.enabled': $('cfg-expr').value === '1',
+    'role.expression.stickerChance': Number($('cfg-sticker').value) / 100,
+    'role.expression.faceChance': Number($('cfg-face').value) / 100,
+    'safety.enabled': $('cfg-safety').value === '1',
+    'role.memory.compressAfterTurns': Number($('cfg-compress').value)
+  };
+  const json = await (await fetch('/api/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })).json();
+  flash(`已保存 ${json.applied?.length ?? 0} 项` + (json.rejected?.length ? `（忽略 ${json.rejected.join(',')}）` : ''), 'settings-msg');
+  const persona = $('cfg-persona').value;
+  if (persona && cfg && persona !== cfg.persona.active) {
+    const p = await (await fetch('/api/persona', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: persona }) })).json();
+    flash(p.msg, 'settings-msg');
+    cfg.persona.active = persona;
+  }
+  refresh(false);
+}
+
+async function restartBridge() {
+  flash('正在重启桥接…', 'settings-msg');
+  const json = await (await fetch('/api/restart-bridge', { method: 'POST' })).json();
+  flash(json.msg, 'settings-msg');
+  setTimeout(() => refresh(false), 3000);
+}
+
+async function loadPlugins() {
+  try {
+    const list = await (await fetch('/api/plugins')).json();
+    $('plugin-list').innerHTML = list.length
+      ? list.map((p) => `<li><span class="k">${esc(p.name)}</span><span>${esc(p.title)} <span style="color:#9fb4c2">v${esc(p.version)}</span> · ${esc(p.description || '无描述')} · ${p.enabled ? '启用' : '停用'}</span></li>`).join('')
+      : '<li><span class="k">（空）</span><span>还没有插件，把目录放到 plugins/ 下即可</span></li>';
+  } catch {}
+}
+
+/* ── 开发者模式开关 ── */
+async function loadDevMode() {
+  try {
+    const d = await (await fetch('/api/devmode')).json();
+    const tag = $('devmode-tag');
+    if (tag) {
+      tag.textContent = d.activated ? '已激活（永久）' : '已停用（永久）';
+      tag.style.background = d.activated ? '#e7f7ef' : '#fdeceb';
+      tag.style.color = d.activated ? '#1d8a68' : '#c9574a';
+    }
+  } catch {}
+}
+
+async function setDevMode(on) {
+  if (!on && !confirm('停用开发者模式后，只能用 开发者模式.ps1 恢复。确定？')) return;
+  const res = await fetch('/api/devmode', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ activated: on })
+  });
+  const json = await res.json();
+  $('devmode-msg').textContent = json.msg || '';
+  await loadDevMode();
+}
+
+/* ── 本地管理：普通账户档案 ── */
+async function loadProfiles() {
+  const wrap = $('profiles-list');
+  if (!wrap) return;
+  try {
+    const d = await (await fetch('/api/profiles')).json();
+    const list = d.list || [];
+    if (!list.length) { wrap.innerHTML = '<p class="hint">还没有普通账户档案（普通用户注册并保存设置后才会出现）。</p>'; return; }
+    wrap.innerHTML = list.map((p) => `
+      <div class="mem-item" style="flex-wrap:wrap;gap:8px">
+        <span class="tag">${esc(p.user)}</span>
+        <span class="txt">QQ ${p.qq ? esc(p.qq) : '未绑定'} · 触发 ${esc(p.trigger)} · 插话 ${Math.round(p.chime * 100)}%</span>
+        <span class="meta">人格 ${p.personaChars} 字 · 受信 ${p.trusted} · 记忆 ${p.memory}</span>
+        <button class="mini" onclick="profileDetail('${esc(p.user)}')">查看</button>
+        <button class="mini" onclick="profileLink('${esc(p.user)}')">关联QQ</button>
+        <button class="mini" onclick="profileImport('${esc(p.user)}')">导入人格</button>
+        <button class="mini" onclick="profileReset('${esc(p.user)}')">重置密码</button>
+        <button class="mini danger" onclick="profileDelete('${esc(p.user)}')">删除</button>
+      </div>`).join('');
+  } catch (error) {
+    wrap.innerHTML = '<p class="hint" style="color:#c9574a">本地管理加载失败：' + esc(error.message) + '（看 state/logs/panel.log）</p>';
+  }
+}
+
+async function profileDetail(user) {
+  const d = await (await fetch('/api/profiles/detail?user=' + encodeURIComponent(user))).json();
+  if (!d.ok) return;
+  const p = d.profile || {};
+  $('profile-detail').innerHTML = `
+    <h3 style="font-size:13.5px;color:#1b6f9c;margin:6px 0">${esc(user)} 的档案</h3>
+    <p class="hint" style="margin:0 0 6px">绑定 QQ：${p.qq ? esc(p.qq) : '未绑定'} ｜ 触发：${esc(p.behavior?.groupTrigger)} ｜ 插话：${Math.round((p.behavior?.chime ?? 0) * 100)}%</p>
+    <p class="hint" style="margin:0 0 6px">人格：${(p.personaText || '').length} 字</p>
+    <pre style="background:#f7fafc;border-radius:10px;padding:10px;white-space:pre-wrap;max-height:200px;overflow:auto">${esc(p.personaText || '（没写人格）')}</pre>
+    <p class="hint" style="margin:6px 0 0">受信 QQ：${(p.trusted || []).join('、') || '无'} ｜ 记忆：${(p.memory || []).length} 条</p>
+  `;
+}
+
+async function profileLink(user) {
+  const qq = prompt('把「' + user + '」关联到哪个 QQ？（留空=解除）', '');
+  if (qq === null) return;
+  const res = await fetch('/api/profiles/manage', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op: 'link', user, qq })
+  });
+  const json = await res.json();
+  flash(json.msg || '已处理', 'settings-msg');
+  loadProfiles();
+}
+
+async function profileImport(user) {
+  const name = prompt('导入成哪张人格卡？（留空=来自-' + user + '）', '');
+  if (name === null) return;
+  const res = await fetch('/api/profiles/manage', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op: 'import-persona', user, name })
+  });
+  const json = await res.json();
+  flash(json.msg || '已处理', 'settings-msg');
+  if (json.ok) loadPersonas(true);
+}
+
+async function profileReset(user) {
+  if (!confirm('把「' + user + '」的密码重置成临时密码 00000？\n他会被迫在登录后改密码。')) return;
+  const res = await fetch('/api/profiles/manage', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op: 'reset-password', user })
+  });
+  const json = await res.json();
+  flash(json.msg || '已处理', 'settings-msg');
+}
+
+async function profileDelete(user) {
+  if (!confirm('删除「' + user + '」的档案？他的设置会丢，账户还在。')) return;
+  const res = await fetch('/api/profiles/manage', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op: 'delete', user })
+  });
+  const json = await res.json();
+  flash(json.msg || '已处理', 'settings-msg');
+  loadProfiles();
+}
+
+/* ── 人格卡 ── */
+let personaList = [];
+
+async function loadPersonas(keepText) {
+  try {
+    const data = await (await fetch('/api/personas')).json();
+    personaList = data.list || [];
+    const sel = $('cfg-persona');
+    if (sel) {
+      sel.innerHTML = personaList.map((p) => `<option value="${p.name}">${p.name}</option>`).join('');
+      const active = data.active || (cfg && cfg.persona && cfg.persona.active) || '';
+      if (active) sel.value = active;
+    }
+    if (!keepText && sel && sel.value) { await loadPersonaText(sel.value); if ($('persona-name')) $('persona-name').value = sel.value; }
+    if (typeof renderPersonaCards === 'function') renderPersonaCards();
+    refreshPersonaStat();
+  } catch {}
+}
+
+async function loadPersonaText(name) {
+  if (!name) return;
+  try {
+    const data = await (await fetch('/api/personas/get?name=' + encodeURIComponent(name))).json();
+    if (data.ok) {
+      $('persona-text').value = data.content || '';
+      $('persona-status').textContent = '（' + name + '，' + (data.content || '').length + ' 字）';
+    }
+  } catch {}
+}
+
+function renderPersonaCards() {
+  const wrap = $('persona-cards');
+  if (!wrap) return;
+  const active = $('cfg-persona') ? $('cfg-persona').value : '';
+  wrap.innerHTML = (personaList || []).filter((x) => x.name !== 'README').map((x) => `
+    <div class="p-card ${x.name === active ? 'active' : ''}" onclick="personaPick('${esc(x.name)}')">
+      ${x.name === active ? '<span class="badge">在用</span>' : ''}
+      <div class="n">${esc(x.name)}</div>
+      <div class="p">${esc(x.preview || '')}</div>
+    </div>`).join('') || '<p class="hint">还没有人格卡，点「新建」写一张。</p>';
+}
+
+function personaPick(name) {
+  $('cfg-persona').value = name;
+  if ($('persona-name')) $('persona-name').value = name;
+  delete $('persona-text').dataset.newName;
+  loadPersonaText(name);
+  renderPersonaCards();
+}
+
+function personaNew() {
+  $('persona-text').value = '';
+  $('persona-name').value = '';
+  $('persona-status').textContent = '（新建）';
+  $('persona-msg').textContent = '先在上面填个卡名，写完内容点「保存」';
+  $('persona-name').focus();
+}
+
+async function personaSave() {
+  const typed = ($('persona-name').value || '').trim();
+  const current = $('cfg-persona').value;
+  const name = typed || current;
+  if (!name) return flash('先填卡名，或先选一张卡', 'settings-msg');
+  await personaSaveTo(name);
+}
+
+async function personaSaveAs() {
+  const typed = ($('persona-name').value || '').trim();
+  const base = $('cfg-persona').value || '新卡';
+  const name = typed || (base + '-副本');
+  await personaSaveTo(name);
+}
+
+/** 手动重跑：从当前在用的人格卡里分析出设定。 */
+async function personaSyncSettings() {
+  const btn = $('persona-sync-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('/api/persona/sync', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}'
+    });
+    const json = await res.json();
+    if ($('persona-msg')) $('persona-msg').textContent = json.msg || (json.ok ? '已同步' : '同步失败');
+    await refreshPersonaStat();
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/** 统计"设定"里有多少条来自人格卡。 */
+async function refreshPersonaStat() {
+  const el = $('persona-setting-stat');
+  if (!el) return;
+  try {
+    const mem = await (await fetch('/api/memory')).json();
+    const list = mem.settings || [];
+    const auto = list.filter((x) => String(x.from || '').startsWith('persona:') || String(x.text || '').startsWith('【人格·'));
+    el.textContent = '设定联动：共 ' + list.length + ' 条，其中人格卡生成 ' + auto.length + ' 条（手工 ' + (list.length - auto.length) + ' 条）';
+  } catch {
+    el.textContent = '';
+  }
+}
+
+async function personaSaveTo(name) {
+  const content = $('persona-text').value;
+  const res = await fetch('/api/personas/save', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, content })
+  });
+  const json = await res.json();
+  flash(json.msg || (json.ok ? '已保存' : '保存失败'), 'settings-msg');
+  if ($('persona-msg')) $('persona-msg').textContent = json.msg || (json.ok ? '已保存' : '保存失败');
+  if (json.ok) {
+    await loadPersonas(true);
+    $('cfg-persona').value = name;
+    $('persona-name').value = name;
+    $('persona-status').textContent = '（' + name + '）';
+    if (typeof renderPersonaCards === 'function') renderPersonaCards();
+  }
+}
+
+async function personaDelete() {
+  const name = $('cfg-persona').value;
+  if (!name) return;
+  if (!confirm('确定删掉「' + name + '」这张人格卡？')) return;
+  const res = await fetch('/api/personas/delete', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  const json = await res.json();
+  flash(json.msg || (json.ok ? '已删除' : '删除失败'), 'settings-msg');
+  if (json.ok) { $('persona-text').value = ''; await loadPersonas(false); }
+}
+
+/* ── 插件 ── */
+let pluginList = [];
+
+let uiIcons = [];
+let uiCurrent = '';
+let blinkTimer = null;
+
+/** 定时眨眼：换成 -blink 图 160ms 再换回来。 */
+function startBlink() {
+  if (blinkTimer) return;
+  const tick = () => {
+    const logo = document.getElementById('brand-logo');
+    const meta = uiIcons.find((x) => x.id === uiCurrent);
+    if (!logo || !meta || !meta.blink) return;
+    const base = '/assets/icons/' + meta.png;
+    logo.src = '/assets/icons/' + meta.blink;
+    setTimeout(() => { logo.src = base; }, 170);
+  };
+  blinkTimer = setInterval(() => {
+    if (Math.random() < 0.6) tick();
+  }, 3800);
+}
+
+async function loadUi() {
+  try {
+    const d = await (await fetch('/api/ui')).json();
+    uiIcons = d.icons || [];
+    uiCurrent = d.icon || 'cocoa';
+    const logo = $('brand-logo');
+    if (logo) logo.src = '/assets/icons/' + uiCurrent + '.png';
+    startBlink();
+    const grid = $('icon-grid');
+    if (grid) {
+      grid.innerHTML = uiIcons.map((ic) => `
+        <div class="icon-card ${ic.id === uiCurrent ? 'active' : ''}" onclick="pickIcon('${esc(ic.id)}')">
+          <img src="/assets/icons/${esc(ic.png)}" alt="${esc(ic.name)}">
+          <div class="n">${esc(ic.name)}</div>
+        </div>`).join('');
+    }
+  } catch {}
+}
+
+async function pickIcon(id) {
+  if (id === uiCurrent) return;
+  const res = await fetch('/api/ui', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ icon: id })
+  });
+  const json = await res.json();
+  $('ui-msg').textContent = json.msg || (json.ok ? '已切换' : '切换失败');
+  if (json.ok) { uiCurrent = id; await loadUi(); }
+}
+
+let envScanned = false;
+
+async function scanEnv(force) {
+  const list = $('env-list');
+  if (!list) return;
+  $('env-msg').textContent = '扫描中…';
+  try {
+    const res = await fetch('/api/env/scan' + (force ? '?force=1' : ''));
+    const data = await res.json();
+    if (!data.items) { $('env-msg').textContent = data.msg || '扫描失败'; return; }
+    const s2 = data.summary || {};
+    $('env-msg').textContent = '共 ' + (s2.total ?? 0) + ' 项：必装缺 ' + (s2.requiredFails ?? 0) + ' 项，可选缺 ' + (s2.optionalFails ?? 0) + ' 项';
+    list.innerHTML = data.items.map((it) => `
+      <div class="env-row">
+        <span class="st">${it.ok ? '✅' : (it.required ? '❌' : '⚪')}</span>
+        <span class="nm">${esc(it.name)}</span>
+        <span class="meta">实际：<b>${esc(it.found)}</b> · 要求：${esc(it.expected)}</span>
+        ${it.ok ? '' : '<span class="fix">' + esc(it.hint) + '</span>'}
+        ${it.url ? `<button class="mini" onclick="openUrl('${esc(it.url)}')">${esc(it.urlLabel || '官方下载')}</button>` : ''}
+      </div>`).join('');
+    envScanned = true;
+  } catch (error) {
+    $('env-msg').textContent = '扫描失败：' + error.message;
+  }
+}
+
+function openUrl(url) {
+  if (!/^https?:\/\//i.test(url)) return;
+  window.open(url, '_blank', 'noopener');
+}
+
+async function loadPluginsUI() {
+  const wrap = $('plugin-cards');
+  if (!wrap) return;
+  try {
+    const data = await (await fetch('/api/plugins/list')).json();
+    pluginList = data.list || [];
+  } catch (error) {
+    wrap.innerHTML = '<p class="hint" style="color:#c9574a">插件列表加载失败：' + esc(error.message) + '</p>';
+    return;
+  }
+  if (!pluginList.length) { wrap.innerHTML = '<p class="hint">还没有插件。把目录放进 plugins/&lt;名字&gt;/ 就会出现在这里。</p>'; return; }
+  wrap.innerHTML = pluginList.map((p) => `
+    <div class="pl-card ${p.enabled ? 'on' : ''}">
+      <div class="pl-head">
+        <b>${esc(p.title || p.name)}</b>
+        <span class="ver">v${esc(p.version || '?')}</span>
+        <span class="state">${p.enabled ? '已启用' : '未启用'}</span>
+      </div>
+      <div class="pl-desc">${esc(p.description || '（没有说明）')}</div>
+      ${p.risk ? `<div class="pl-risk">⚠ ${esc(p.risk)}</div>` : ''}
+      <div class="pl-actions">
+        <button class="${p.enabled ? 'ghost' : 'primary'}" onclick="togglePlugin('${esc(p.name)}', ${p.enabled ? 'false' : 'true'})">
+          ${p.enabled ? '停用' : '启用'}
+        </button>
+        ${p.name === 'learning' ? '<button class="mini" onclick="loadLearning()">刷新学习数据</button>' : ''}
+        <span class="hint">${p.enabled ? '改完重启桥接生效' : ''}</span>
+      </div>
+    </div>`).join('');
+  const lr = pluginList.find((p) => p.name === 'learning');
+  const box = $('learning-box');
+  if (box) box.style.display = lr ? '' : 'none';
+  if (lr) loadLearning();
+}
+
+async function togglePlugin(name, enabled) {
+  if (enabled) {
+    const p = pluginList.find((x) => x.name === name);
+    const risk = (p && p.risk) || '开启后行为会随消息量变化。';
+    if (!confirm('启用「' + (p?.title || name) + '」？\n\n⚠ ' + risk + '\n\n确定启用吗？')) return;
+  }
+  const res = await fetch('/api/plugins/toggle', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, enabled })
+  });
+  const json = await res.json();
+  flash(json.msg || (json.ok ? '已处理' : '失败'), 'settings-msg');
+  await loadPluginsUI();
+  if (json.ok && enabled && confirm('是否现在重启桥接，让插件立即生效？')) restartBridge();
+}
+
+async function loadLearning() {
+  const box = $('learning-box');
+  if (!box) return;
+  try {
+    const d = await (await fetch('/api/learning')).json();
+    if (!d.ok) { box.innerHTML = '<p class="hint">学习数据仅开发者可见</p>'; return; }
+    const cats = d.cats || {};
+    box.innerHTML = `
+      <h3 style="font-size:13.5px;color:var(--deep);margin:4px 0 6px">学习到的词条 <span class="hint">共 ${d.total} 条 · 只存在 state/learning.json，不进记忆和设定</span></h3>
+      <div class="learn-grid">
+        ${Object.entries(cats).map(([k, v]) => `<div class="learn-cat"><div class="n">${v}</div><div class="k">${esc(k)}</div></div>`).join('')}
+      </div>
+      <div style="max-height:220px;overflow:auto;margin-top:6px">
+        ${(d.items || []).slice(0, 40).map((it) => `<div class="learn-item"><span class="tag">${esc(it.cat)}</span><span class="t">${esc(it.term)}</span><span class="c">×${it.count || 1}</span></div>`).join('') || '<p class="hint">还没学到东西。启用插件后聊几句就会开始积累。</p>'}
+      </div>
+      ${(d.edges || []).length ? `<p class="hint" style="margin-top:8px">关联：“${d.edges.slice(0,6).map((e) => esc(e.a) + ' ↔ ' + esc(e.b)).join('、')}”</p>` : ''}
+      <div class="val" style="margin-top:8px"><button class="mini danger" onclick="clearLearning()">清空学习记录</button></div>`;
+  } catch (error) {
+    box.innerHTML = '<p class="hint" style="color:#c9574a">学习数据加载失败：' + esc(error.message) + '</p>';
+  }
+}
+
+async function clearLearning() {
+  if (!confirm('清空所有学习到的词条？不影响记忆和设定。')) return;
+  const res = await fetch('/api/learning/clear', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  const json = await res.json();
+  flash(json.msg || '已处理', 'settings-msg');
+  loadLearning();
+}
+
+/* ── 普通账户：自己的设置页（与开发者配置隔离）── */
+let profile = null;
+let presets = { models: [], personas: [] };
+let trustedList = [];
+
+function esc2(v) { return String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+async function loadProfile() {
+  try {
+    const data = await (await fetch('/api/profile')).json();
+    profile = data.profile || null;
+    presets = data.presets || presets;
+  } catch { profile = null; }
+  renderProfileBox();
+}
+
+function renderProfileBox() {
+  const box = $('profile-box');
+  if (!box) return;
+  if (me.isDeveloper || !profile) { box.style.display = 'none'; $('owner-settings').style.display = ''; return; }
+
+  $('owner-settings').style.display = 'none';
+  box.style.display = '';
+  const b = profile.behavior || {};
+  box.innerHTML = `
+    <h2>我的设置 <span class="tag">只影响我自己</span></h2>
+    <p class="hint" style="margin:0 0 12px">这些设置存在你自己的档案里，不会改动开发者的配置。</p>
+
+    <div class="field">
+      <label>模型（预设）</label>
+      <div class="val">
+        <select id="pf-model" style="max-width:240px">
+          <option value="">跟随管理员默认</option>
+          ${(presets?.models || []).map((m) => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('')}
+        </select>
+      </div>
+      <p class="hint" style="margin:4px 0 0">这是你的偏好，实际用哪个模型由管理员统一配置。</p>
+    </div>
+
+    <div class="field">
+      <label>预设人格 <span class="hint">点一张就能用，也可以自己写</span></label>
+      <div class="persona-cards" id="pf-persona-cards"></div>
+    </div>
+
+    <div class="field">
+      <label>绑定 QQ（填了才生效）</label>
+      <div class="val"><input type="text" id="pf-qq" maxlength="12" placeholder="你的 QQ 号" value="${esc2(profile.qq)}" style="max-width:200px"></div>
+    </div>
+
+    <div class="field">
+      <label>我的人格卡</label>
+      <div class="val"><textarea id="pf-persona" rows="7" placeholder="你希望它怎么跟你说话？比如：说话简短一点，多用语气词。">${esc2(profile.personaText)}</textarea></div>
+    </div>
+
+    <div class="field">
+      <label>语音</label>
+      <div class="val">
+        <label class="sw"><input type="checkbox" id="pf-voice" ${profile.behavior?.voiceReply ? 'checked' : ''}> 允许它给我发语音</label>
+        <span class="hint">开关只影响你自己的会话；需要管理员先在全局开启语音</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>群聊触发</label>
+      <div class="val">
+        <select id="pf-trigger" style="max-width:200px">
+          <option value="smart">智能判断</option>
+          <option value="mention">只回 @</option>
+          <option value="all">每条都接</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>随机插话概率 <span class="hint" id="pf-chime-val">${Math.round((b.chime ?? 0.18) * 100)}%</span></label>
+      <div class="val"><input type="range" id="pf-chime" min="0" max="100" value="${Math.round((b.chime ?? 0.18) * 100)}" style="flex:1"></div>
+    </div>
+
+    <div class="field">
+      <label>表情</label>
+      <div class="val">
+        <label class="sw"><input type="checkbox" id="pf-expr" ${b.expressionOn === false ? '' : 'checked'}> 允许自己发表情</label>
+        <span class="hint">表情包</span><input type="range" id="pf-sticker" min="0" max="100" value="${Math.round((b.stickerChance ?? 0.22) * 100)}" style="max-width:110px">
+        <span class="hint">小黄脸</span><input type="range" id="pf-face" min="0" max="100" value="${Math.round((b.faceChance ?? 0.12) * 100)}" style="max-width:110px">
+      </div>
+    </div>
+
+    <div class="field">
+      <label>我的受信 QQ <span class="hint">这些人不用 @ 也能跟它说话（只对你自己生效）</span></label>
+      <div class="val" style="flex-wrap:wrap;gap:6px">
+        <div id="pf-chips" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+        <input type="text" id="pf-trusted-input" placeholder="输入 QQ，回车加入" style="max-width:190px">
+        <button class="mini" onclick="pfTrustedAdd()">加入</button>
+      </div>
+    </div>
+
+    <div class="val" style="margin-top:16px">
+      <button class="primary" onclick="saveProfile()">保存设置</button>
+      <span class="hint" id="pf-msg"></span>
+    </div>
+  `;
+
+  $('pf-trigger').value = b.groupTrigger || 'smart';
+  if ($('pf-model')) $('pf-model').value = profile.model || '';
+  const pcs = $('pf-persona-cards');
+  if (pcs) {
+    pcs.innerHTML = (presets?.personas || []).map((x) => `
+      <div class="p-card ${profile.personaName === x.name ? 'active' : ''}" onclick="pfPickPersona('${esc(x.name)}')">
+        <div class="n">${esc(x.name)}</div>
+        <div class="p">${esc(x.text)}</div>
+      </div>`).join('') + `
+      <div class="p-card ${!profile.personaName ? 'active' : ''}" onclick="pfPickPersona('')">
+        <div class="n">自设</div>
+        <div class="p">用下面文本框里写的内容</div>
+      </div>`;
+  }
+  $('pf-chime').addEventListener('input', (e) => { $('pf-chime-val').textContent = e.target.value + '%'; });
+  $('pf-trusted-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); pfTrustedAdd(); } });
+  renderPfChips();
+}
+
+function pfPickPersona(name) {
+  profile.personaName = name;
+  if (name) {
+    const preset = (presets?.personas || []).find((x) => x.name === name);
+    if (preset) $('pf-persona').value = preset.text;
+  }
+  renderProfileBox();
+}
+
+function renderPfChips() {
+  const wrap = $('pf-chips');
+  if (!wrap) return;
+  wrap.innerHTML = (profile.trusted || []).map((qq) => `
+    <span class="chip" style="display:inline-flex;align-items:center;gap:6px">${esc2(qq)}
+      <b style="cursor:pointer;color:#c9574a" onclick="pfTrustedRemove('${esc2(qq)}')">×</b></span>`).join('')
+    || '<span class="hint">还没加人</span>';
+}
+
+function pfTrustedAdd() {
+  const input = $('pf-trusted-input');
+  const qq = (input.value || '').replace(/\D/g, '');
+  if (qq.length < 5) { $('pf-trusted-input').focus(); return; }
+  profile.trusted = [...new Set([...(profile.trusted || []), qq])];
+  input.value = '';
+  renderPfChips();
+}
+
+function pfTrustedRemove(qq) {
+  profile.trusted = (profile.trusted || []).filter((x) => x !== qq);
+  renderPfChips();
+}
+
+async function saveProfile() {
+  const body = {
+    model: $('pf-model') ? $('pf-model').value : '',
+    personaName: profile.personaName || '',
+    qq: $('pf-qq').value.trim(),
+    personaText: $('pf-persona').value,
+    behavior: {
+      groupTrigger: $('pf-trigger').value,
+      chime: Number($('pf-chime').value) / 100,
+      expressionOn: $('pf-expr').checked,
+      stickerChance: Number($('pf-sticker').value) / 100,
+      faceChance: Number($('pf-face').value) / 100,
+      voiceReply: $('pf-voice') ? $('pf-voice').checked : false
+    },
+    trusted: profile.trusted || []
+  };
+  const res = await fetch('/api/profile', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+  });
+  const json = await res.json();
+  $('pf-msg').textContent = json.msg || (json.ok ? '已保存' : '保存失败');
+  if (json.ok && json.profile) profile = json.profile;
+}
+
+/* ── 受信 QQ（开发者用）── */
+function renderTrusted() {
+  const wrap = $('trusted-chips');
+  if (!wrap || !cfg) return;
+  const list = (cfg.role && cfg.role.developers) || [];
+  wrap.innerHTML = list.map((qq) => `<span class="chip" style="display:inline-flex;align-items:center;gap:6px">${esc2(qq)}
+    <b style="cursor:pointer;color:#c9574a" onclick="trustedRemove('${esc2(qq)}')">×</b></span>`).join('')
+    || '<span class="hint">还没加人</span>';
+}
+
+function trustedAdd() {
+  const input = $('trusted-input');
+  const qq = (input.value || '').replace(/\D/g, '');
+  if (qq.length < 5) return;
+  const list = (cfg.role && cfg.role.developers) || [];
+  cfg.role.developers = [...new Set([...list, qq])];
+  input.value = '';
+  renderTrusted();
+}
+
+function trustedRemove(qq) {
+  if (!cfg || !cfg.role) return;
+  cfg.role.developers = (cfg.role.developers || []).filter((x) => x !== qq);
+  renderTrusted();
+}
+
+/* ── 记忆 ── */
+async function loadMemory() {
+  // 记忆统一走 /api/memory：服务端按会话身份返回自己的文件
+  try { memory = await (await fetch('/api/memory')).json(); } catch { return; }
+  const counts = [
+    ['设定', memory.settings.length], ['长期', memory.long.length],
+    ['短期', memory.short.length], ['关键词', memory.keywords.length], ['摘要', memory.summaries.length]
+  ];
+  $('mem-stats').innerHTML = counts.map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('');
+  renderMemoryBody();
+}
+
+async function loadAutoMemState() {
+  try {
+    const cfg = await (await fetch('/api/config')).json();
+    if (!cfg || !cfg.role) return;   // 普通账户拿不到全局配置，跳过
+    const on = cfg.role.memory?.autoRemember !== false;
+    const el = $('automem-state');
+    if (el) { el.textContent = on ? '已开启' : '已关闭'; el.style.background = on ? '#e7f7ef' : '#fdeceb'; el.style.color = on ? '#1d8a68' : '#c9574a'; }
+  } catch {}
+}
+
+async function toggleAutoMem() {
+  try {
+    const cfg = await (await fetch('/api/config')).json();
+    if (!cfg || !cfg.role) { $('automem-msg').textContent = '只有开发者能改这个开关'; return; }
+    const on = cfg.role.memory?.autoRemember !== false;
+    if (!on && !confirm('开启自主记忆？\n\n它会自己把你说的事实写进记忆（只是记忆，不改人格卡和设定）。\n\n确定开启吗？')) return;
+    const res = await fetch('/api/config', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ 'role.memory.autoRemember': !on })
+    });
+    const json = await res.json();
+    $('automem-msg').textContent = json.ok ? (json.rejected?.length ? '部分字段被拒' : '已保存，重启桥接生效') : '保存失败';
+    await loadAutoMemState();
+  } catch (error) {
+    $('automem-msg').textContent = '操作失败：' + error.message;
+  }
+}
+
+function memTab(tier) {
+  memTier = tier;
+  document.querySelectorAll('#mem-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tier === tier));
+  renderMemoryBody();
+}
+
+function renderMemoryBody() {
+  if (!memory) return;
+  let rows = '';
+  if (memTier === 'long' || memTier === 'short') {
+    const list = memTier === 'long' ? memory.long : memory.short;
+    rows = list.length ? list.map((f) => `
+      <div class="mem-item">
+        <span class="txt">${esc(f.text)}</span>
+        ${(f.tags || []).includes('auto') ? '<span class="tag">自动</span>' : ''}
+        <span class="meta">w${f.weight} · 命中${f.access}</span>
+        <button class="mini" onclick="memAct('${memTier === 'long' ? 'demote' : 'promote'}','${memTier}','${f.id}')">${memTier === 'long' ? '降为短期' : '升为长期'}</button>
+        <button class="mini danger" onclick="memAct('delete','${memTier}','${f.id}')">删除</button>
+      </div>`).join('') : '<div class="topic">这一层还是空的</div>';
+  } else if (memTier === 'keyword') {
+    rows = memory.keywords.length ? memory.keywords.map((k) => `
+      <div class="mem-item">
+        <span class="txt">「${esc(k.word)}」＝${esc(k.meaning)}</span>
+        <span class="meta">${k.tier === 'long' ? '长期' : '短期'}</span>
+        <button class="mini danger" onclick="memAct('keyword-delete','${k.tier}','${esc(k.word)}')">删除</button>
+      </div>`).join('') : '<div class="topic">还没有关键词</div>';
+  } else if (memTier === 'summary') {
+    rows = memory.summaries.length ? memory.summaries.map((s) => `
+      <div class="mem-item"><span class="txt"><b>${esc(s.key)}</b><br>${esc(s.text)}</span><span class="meta">${s.turns || 0} 条</span></div>`).join('') : '<div class="topic">还没有摘要</div>';
+  } else {
+    rows = memory.settings.length ? memory.settings.map((s) => `<div class="mem-item"><span class="txt">${esc(s.text)}</span><span class="meta">永不删</span></div>`).join('') : '<div class="topic">没有设定</div>';
+  }
+  $('mem-body').innerHTML = rows;
+}
+
+async function memAct(op, tier, id) {
+  const json = await (await fetch('/api/memory', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ op, tier, id }) })).json();
+  flash(json.msg || (json.ok ? '完成' : '失败'), 'mem-tag');
+  loadMemory();
+  refresh(false);
+}
+
+async function memAdd() {
+  const text = $('mem-new').value.trim();
+  if (!text) return;
+  const tier = $('mem-new-tier').value;
+  const json = await (await fetch('/api/memory', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ op: 'add', tier, text }) })).json();
+  flash(json.msg, 'mem-tag');
+  if (json.ok) $('mem-new').value = '';
+  loadMemory();
+  refresh(false);
+}
+
+/* ── 使用说明 ── */
+let helpLoaded = false;
+
+/**
+ * 极简 markdown → HTML：只处理标题/段落/列表/代码块/表格/粗体/行内代码。
+ * 够用就好，避免为一份手册引一个解析库。
+ */
+function mdToHtml(md) {
+  const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const inline = (s) => esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+  const lines = md.replace(/\r/g, '').split('\n');
+  const out = [];
+  let inCode = false;
+  let table = [];
+
+  const flushTable = () => {
+    if (!table.length) return;
+    const rows = table.filter((r) => !/^\s*\|?[\s:|-]+\|?\s*$/.test(r)).map((r) => r.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim()));
+    table = [];
+    if (!rows.length) return;
+    out.push('<div class="tbl"><table>');
+    rows.forEach((row, i) => {
+      const tag = i === 0 ? 'th' : 'td';
+      out.push('<tr>' + row.map((c) => '<' + tag + '>' + inline(c) + '</' + tag + '>').join('') + '</tr>');
+    });
+    out.push('</table></div>');
+  };
+
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    if (line.startsWith('```')) {
+      if (inCode) { out.push('</code></pre>'); inCode = false; }
+      else { flushTable(); out.push('<pre><code>'); inCode = true; }
+      continue;
+    }
+    if (inCode) { out.push(esc(line)); continue; }
+    if (/^\s*\|/.test(line)) { table.push(line); continue; }
+    if (table.length) flushTable();
+    if (/^\s*$/.test(line)) continue;
+    const h = /^(#{1,4})\s+(.*)$/.exec(line);
+    if (h) { out.push('<h' + h[1].length + '>' + inline(h[2]) + '</h' + h[1].length + '>'); continue; }
+    if (/^\s*[-*]\s+/.test(line)) { out.push('<ul><li>' + inline(line.replace(/^\s*[-*]\s+/, '')) + '</li></ul>'); continue; }
+    if (/^\s*\d+[.)]\s+/.test(line)) { out.push('<ol><li>' + inline(line.replace(/^\s*\d+[.)]\s+/, '')) + '</li></ol>'); continue; }
+    if (/^\s*---\s*$/.test(line)) { out.push('<hr>'); continue; }
+    out.push('<p>' + inline(line) + '</p>');
+  }
+  if (inCode) out.push('</code></pre>');
+  flushTable();
+  // 相邻 <li> 合并成同一个列表
+  return out.join('\n').replace(/<\/ul>\s*<ul>/g, '').replace(/<\/ol>\s*<ol>/g, '');
+}
+
+let changelogLoaded = false;
+async function loadChangelog() {
+  if (changelogLoaded) return;
+  try {
+    const { markdown } = await (await fetch('/api/changelog')).json();
+    $('changelog-body').innerHTML = mdToHtml(markdown || '');
+    changelogLoaded = true;
+  } catch {
+    $('changelog-body').textContent = '更新日志加载失败';
+  }
+}
+
+async function loadHelp() {
+  if (helpLoaded) return;
+  try {
+    const { markdown } = await (await fetch('/api/help')).json();
+    document.getElementById('help-body').innerHTML = mdToHtml(markdown || '');
+    helpLoaded = true;
+  } catch {
+    document.getElementById('help-body').textContent = '使用说明加载失败';
+  }
+}
+
+/* ── SnowLuma ── */
+let frameLoaded = false;
+function loadFrame() {
+  const frame = $('snowluma-frame');
+  const url = (state && state.snowlumaUi && state.snowlumaUi.url) || 'http://127.0.0.1:5098';
+  if (!frameLoaded) { frame.src = url; frameLoaded = true; }
+}
+function reloadFrame() {
+  const url = (state && state.snowlumaUi && state.snowlumaUi.url) || 'http://127.0.0.1:5098';
+  $('snowluma-frame').src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+  frameLoaded = true;
+}
+function openFrameExternal() {
+  const url = (state && state.snowlumaUi && state.snowlumaUi.url) || 'http://127.0.0.1:5098';
+  window.open(url, '_blank');
+}
+
+/* ── 免责声明 ── */
+/** 临时密码会话：强制改密码，改完才消失。 */
+function maybeForceChange() {
+  if (!me.mustChange) return;
+  const el = $('force-change');
+  if (el) el.classList.add('show');
+}
+
+async function submitNewPass() {
+  const p1 = $('fc-pass').value;
+  const p2 = $('fc-pass2').value;
+  const msg = $('fc-msg');
+  if (p1.length < 6) { msg.textContent = '至少 6 位'; return; }
+  if (p1 !== p2) { msg.textContent = '两次输入不一样'; return; }
+  try {
+    const res = await fetch('/api/auth/change-password', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ newPass: p1 })
+    });
+    const json = await res.json();
+    if (!json.ok) { msg.textContent = json.msg || '失败'; return; }
+    msg.textContent = '已生效，正在刷新…';
+    me.mustChange = false;
+    setTimeout(() => location.reload(), 600);
+  } catch (error) {
+    msg.textContent = '连不上面板：' + error.message;
+  }
+}
+
+function openDisclaimer() { $('disclaimer').classList.add('show'); }
+
+/** 每个页面加载都弹一次；点过「不再弹出」就永久跳过。 */
+function maybeShowDisclaimer() {
+  try {
+    if (localStorage.getItem(DISCLAIMER_KEY + '-never') === '1') return;
+  } catch {}
+  setTimeout(() => openDisclaimer(), 250);
+}
+
+/** 不读了，以后都别弹。 */
+function neverDisclaimer() {
+  try { localStorage.setItem(DISCLAIMER_KEY + '-never', '1'); } catch {}
+  closeDisclaimer();
+}
+function closeDisclaimer() { $('disclaimer').classList.remove('show'); }
+function acceptDisclaimer() {
+  try { localStorage.setItem(DISCLAIMER_KEY, '1'); } catch {}
+  closeDisclaimer();
+}
+
+
+/* ── 基础工具（补回）── */
+let me = { role: '', user: '', isDeveloper: false };
+
+/* ── 角色应用（补回）── */
+function applyRole() {
+  const dev = !!me.isDeveloper;
+
+  // 设置/记忆两个标签所有人都能看到：开发者看全局，普通账户看自己的
+
+  // 启停按钮：普通账户不能点
+  document.querySelectorAll('.btns button, .bar button').forEach((b) => {
+    const txt = (b.textContent || '').trim();
+    if (/启动|停止/.test(txt)) {
+      b.disabled = !dev;
+      b.title = dev ? '' : '普通账户不能启停服务';
+    }
+  });
+
+  // 顶部角色徽章
+  const badge = $('chip-role');
+  if (badge) {
+    badge.textContent = dev ? '👑 开发者' : '👤 普通';
+    badge.style.background = dev ? 'rgba(255,255,255,.28)' : 'rgba(255,255,255,.14)';
+  }
+
+  // 开发者专属区块（含底部全局操作条、插件说明）
+  for (const sel of ['#owner-actions']) {
+    const el = document.querySelector(sel);
+    if (el) el.style.display = dev ? '' : 'none';
+  }
+  for (const id of ['devmode-panel', 'local-manage', 'accounts-panel']) {
+    const el = $(id);
+    if (el) el.style.display = dev ? '' : 'none';
+  }
+
+  if (dev) {
+    const owner = $('owner-settings');
+    if (owner) owner.style.display = '';
+    const box = $('profile-box');
+    if (box) box.style.display = 'none';
+    loadAccounts();
+    loadDevMode();
+    loadProfiles();
+    loadPluginsUI();
+    renderTrusted();
+    refreshPersonaStat();
+    if (typeof showOwnerHint === 'function') showOwnerHint();
+  } else {
+    loadProfile();
+  }
+}
+
+/* ── 账户列表（补回）── */
+async function loadAccounts() {
+  const listEl = $('account-list');
+  if (!listEl) return;
+  try {
+    const { accounts } = await (await fetch('/api/auth/accounts')).json();
+    const rows = (accounts || []).map((a) => `
+      <li>
+        <span class="k">${a.role === 'developer' ? '👑' : '👤'} ${esc(a.user)}</span>
+        <span style="flex:1">${a.role === 'developer' ? '开发者（最高权限）' : '普通（可自设）'}</span>
+        ${a.role === 'developer'
+          ? '<span class="meta">不可删除</span>'
+          : `<button class="mini danger" onclick="delAccount('${esc(a.user)}')">删除</button>`}
+      </li>`).join('');
+    listEl.innerHTML = rows || '<li class="hint">还没有普通账户</li>';
+  } catch (error) {
+    listEl.innerHTML = '<li class="hint" style="color:#c9574a">账户列表加载失败：' + esc(error.message) + '</li>';
+  }
+}
+
+
+/* ── 账户操作（补回）── */
+async function addAccount() {
+  const user = ($('acc-user')?.value || '').trim();
+  const pass = $('acc-pass')?.value || '';
+  if (!user || !pass) return flash('用户名和密码都要填', 'settings-msg');
+  const res = await fetch('/api/auth/accounts', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ user, pass })
+  });
+  const json = await res.json();
+  flash(json.msg || (json.ok ? '已添加' : '失败'), 'settings-msg');
+  if (json.ok) { $('acc-user').value = ''; $('acc-pass').value = ''; loadAccounts(); }
+}
+
+async function delAccount(user) {
+  if (!confirm('删除普通账户「' + user + '」？（他的档案会保留）')) return;
+  const res = await fetch('/api/auth/accounts', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op: 'delete', user })
+  });
+  const json = await res.json();
+  flash(json.msg || '已处理', 'settings-msg');
+  loadAccounts();
+}
+
+async function logout() {
+  try { await fetch('/api/auth/logout', { method: 'POST' }); } catch {}
+  location.href = '/login.html';
+}
+
+const hash = (location.hash || '').replace('#', '');
+if (['settings', 'memory', 'snowluma', 'help', 'changelog'].includes(hash)) showView(hash);
+try { if (!location.search.includes('nodisclaimer')) maybeShowDisclaimer(); } catch {}
+
+// 先取身份，再渲染界面（普通账户进来就没有设置/记忆）
+fetch('/api/auth/status').then((r) => r.json()).then((s) => {
+  me = { role: s.role || '', user: s.sessionUser || '', isDeveloper: !!s.isDeveloper, mustChange: !!s.mustChange };
+  const el = $('chip-user');
+  if (el) el.textContent = me.user || '';
+  applyRole();
+  maybeForceChange();
+  loadUi();
+}).catch(() => {});
+
+refresh(false);
+setInterval(() => refresh(false), 3000);
+</script>
+</body>
+</html>

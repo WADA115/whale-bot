@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>小鲸鱼控制台 · 登录</title>
+<style>
+  :root{--ink:#14344a;--muted:#6b8ea3;--line:#e2eef5;--deep:#1b6f9c;--coral:#ff7a6b;--ok:#1d8a68}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:grid;place-items:center;color:var(--ink);
+    font:14px/1.6 "微软雅黑","Microsoft YaHei",-apple-system,"Segoe UI",sans-serif;
+    background:radial-gradient(1000px 460px at 8% -8%,#dff2fe 0,transparent 62%),
+      radial-gradient(820px 400px at 100% 0,#e6fbf3 0,transparent 58%),
+      linear-gradient(180deg,#f7fbfe,#eef6fa);padding:24px}
+  .card{width:100%;max-width:860px;background:#fff;border:1px solid var(--line);border-radius:22px;
+    box-shadow:0 20px 50px rgba(31,95,158,.14);overflow:hidden}
+  .top{background:linear-gradient(120deg,#3aa7d6,#2f8fc9 45%,#4cc4b0);color:#fff;padding:24px 28px 20px;
+    position:relative;overflow:hidden}
+  .top .wave{position:absolute;left:0;right:0;bottom:-2px;height:32px;opacity:.9}
+  .logo{width:62px;height:62px;border-radius:18px;background:rgba(255,255,255,.22);display:grid;
+    place-items:center;font-size:23px;border:1px solid rgba(255,255,255,.35);margin-bottom:9px}
+  .top h1{margin:0;font-size:18px;letter-spacing:.5px}
+  .top .sub{font-size:12px;opacity:.9;margin-top:3px}
+
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:0}
+  .panel{padding:22px 24px 24px;min-height:250px}
+  .panel + .panel{border-left:1px dashed var(--line)}
+  .panel h2{margin:0 0 4px;font-size:15px;color:var(--deep);display:flex;align-items:center;gap:8px}
+  .panel .role{font-size:11px;font-weight:400;color:var(--muted);background:#f2f8fc;border-radius:999px;padding:2px 9px}
+  .panel p.desc{font-size:12px;color:var(--muted);margin:0 0 12px}
+  label{display:block;font-size:12.4px;color:#41627a;margin:10px 0 5px}
+  input{width:100%;font:inherit;font-size:13.5px;padding:10px 12px;border:1px solid var(--line);
+    border-radius:11px;background:#fbfdff;color:var(--ink);outline:none;transition:.15s}
+  input:focus{border-color:#9fd2ee;box-shadow:0 0 0 3px rgba(58,167,214,.12)}
+  #devkey{letter-spacing:2px;font-family:Consolas,monospace}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px}
+  button{font:inherit;font-size:13.5px;font-weight:600;padding:10px;border:0;border-radius:11px;cursor:pointer;transition:.15s}
+  button.primary{background:linear-gradient(120deg,#3aa7d6,#4cc4b0);color:#fff}
+  button.ghost{background:#f3fafd;color:var(--deep);border:1px solid #d8ecf7}
+  button:hover{filter:brightness(1.03)}
+  button:disabled{opacity:.6;cursor:not-allowed}
+  button.link{background:none;border:0;color:#1b6f9c;font-size:12.4px;text-decoration:underline;cursor:pointer;padding:2px 4px}
+  .msg{font-size:12.2px;margin-top:10px;min-height:18px}
+  .msg.err{color:var(--coral)}
+  .msg.ok{color:var(--ok)}
+  .foot{font-size:11.4px;color:#a9c0cf;text-align:center;padding:0 22px 16px}
+  @media (max-width:760px){
+    .cols{grid-template-columns:1fr}
+    .panel + .panel{border-left:0;border-top:1px dashed var(--line)}
+  }
+  #login-logo{display:block;width:100%!important;height:100%!important;object-fit:contain}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="top">
+    <div class="logo" style="padding:0;overflow:hidden"><img id="login-logo" src="/assets/icons/cocoa.png" alt="小鲸鱼" style="width:100%;height:100%;object-fit:contain"></div>
+    <h1>小鲸鱼控制台</h1>
+    <div class="sub">两个入口，各自独立</div>
+    <svg class="wave" viewBox="0 0 800 32" preserveAspectRatio="none">
+      <path d="M0,16 C120,32 260,2 400,13 C540,26 660,6 800,15 L800,32 L0,32 Z" fill="#fff"/>
+    </svg>
+  </div>
+
+  <div class="cols">
+    <!-- 普通用户 -->
+    <section class="panel">
+      <h2>普通用户 <span class="role">只读 · 可自设</span></h2>
+      <p class="desc">看状态和日志；自己的设置可以改，全局设置需要开发者密钥。</p>
+
+      <label>用户名</label>
+      <input id="user" maxlength="24" placeholder="你的用户名">
+      <label>密码</label>
+      <input id="pass" type="password" placeholder="至少 6 位">
+
+      <div class="row">
+        <button class="ghost" id="btn-register" onclick="doRegister()">注册</button>
+        <button class="primary" id="btn-login" onclick="doLogin()">登录</button>
+      </div>
+      <div style="text-align:center;margin-top:10px">
+        <button class="link" id="btn-reset" onclick="doReset()">忘记密码？重置</button>
+      </div>
+      <div class="msg" id="msg-user"></div>
+    </section>
+
+    <!-- 开发者 -->
+    <section class="panel">
+      <h2>开发者 <span class="role">最高权限</span></h2>
+      <p class="desc">不需要账户，密钥正确就直接进入。</p>
+
+      <label>开发者密钥</label>
+      <input id="devkey" placeholder="12 位密钥" autocomplete="off">
+
+      <div class="row" style="grid-template-columns:1fr">
+        <button class="primary" id="btn-dev" onclick="doDev()">进入</button>
+      </div>
+      <div class="msg" id="msg-dev"></div>
+    </section>
+  </div>
+
+  <div style="text-align:center;padding:0 22px 8px"><a href="/guide.html" style="font-size:12.4px;color:#1b6f9c;text-decoration:underline">使用说明：怎么注册 / 两个入口的区别</a></div>
+  <div class="foot">小鲸鱼控制台 · 本地 3200 · 仅 127.0.0.1</div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function say(which, text, kind = '') {
+  const el = which === 'dev' ? $('msg-dev') : $('msg-user');
+  el.textContent = text || '';
+  el.className = 'msg ' + kind;
+}
+
+async function post(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  let json = {};
+  try { json = await res.json(); } catch {}
+  return { status: res.status, json };
+}
+
+async function doRegister() {
+  const user = $('user').value.trim();
+  const pass = $('pass').value;
+  if (!user) return say('user', '请填用户名', 'err');
+  if (pass.length < 6) return say('user', '密码至少 6 位', 'err');
+  $('btn-register').disabled = true;
+  say('user', '注册中…');
+  try {
+    const { json } = await post('/api/auth/register', { user, pass });
+    if (!json.ok) return say('user', json.msg || '注册失败', 'err');
+    say('user', '注册成功，进入中…', 'ok');
+    location.href = '/';
+  } catch (e) {
+    say('user', '连不上面板：' + e.message, 'err');
+  } finally {
+    $('btn-register').disabled = false;
+  }
+}
+
+async function doReset() {
+  const user = $('user').value.trim();
+  if (!user) return say('user', '先在上面填用户名', 'err');
+  if (!confirm('把「' + user + '」的密码重置成临时密码 00000？\n重置后要立刻设置新密码。')) return;
+  $('btn-reset').disabled = true;
+  say('user', '重置中…');
+  try {
+    const { status, json } = await post('/api/auth/reset', { user });
+    if (!json.ok) return say('user', json.msg || '重置失败', 'err');
+    say('user', '已重置，临时密码 ' + (json.tempPassword || '00000') + '，正在登录…', 'ok');
+    const login = await post('/api/auth/login', { mode: 'user', user, pass: json.tempPassword || '00000' });
+    if (login.json.ok) { location.href = '/'; return; }
+    say('user', '重置成功，但自动登录失败：请手动用临时密码 ' + (json.tempPassword || '00000') + ' 登录', 'err');
+    $('pass').value = json.tempPassword || '00000';
+  } catch (e) {
+    say('user', '连不上面板：' + e.message, 'err');
+  } finally {
+    $('btn-reset').disabled = false;
+  }
+}
+
+async function doLogin() {
+  const user = $('user').value.trim();
+  const pass = $('pass').value;
+  if (!user || !pass) return say('user', '用户名和密码都要填', 'err');
+  $('btn-login').disabled = true;
+  say('user', '登录中…');
+  try {
+    const { json } = await post('/api/auth/login', { mode: 'user', user, pass });
+    if (!json.ok) return say('user', json.msg || '登录失败', 'err');
+    say('user', '登录成功，进入中…', 'ok');
+    location.href = '/';
+  } catch (e) {
+    say('user', '连不上面板：' + e.message, 'err');
+  } finally {
+    $('btn-login').disabled = false;
+  }
+}
+
+async function doDev() {
+  const devKey = $('devkey').value.trim();
+  if (!devKey) return say('dev', '请输入开发者密钥', 'err');
+  $('btn-dev').disabled = true;
+  say('dev', '验证中…');
+  try {
+    const { json } = await post('/api/auth/login', { mode: 'dev', devKey });
+    if (!json.ok) { say('dev', json.msg || '密钥不对', 'err'); $('devkey').value = ''; return; }
+    say('dev', '进入中…', 'ok');
+    location.href = '/';
+  } catch (e) {
+    say('dev', '连不上面板：' + e.message, 'err');
+  } finally {
+    $('btn-dev').disabled = false;
+  }
+}
+
+// 回车快捷：普通栏回车=登录，开发者栏回车=进入
+$('pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+$('devkey').addEventListener('keydown', (e) => { if (e.key === 'Enter') doDev(); });
+function startLoginBlink(meta) {
+  const img = document.getElementById('login-logo');
+  if (!img || !meta || !meta.blink) return;
+  const base = '/assets/icons/' + meta.png;
+  setInterval(() => {
+    if (Math.random() < 0.6) {
+      img.src = '/assets/icons/' + meta.blink;
+      setTimeout(() => { img.src = base; }, 170);
+    }
+  }, 3800);
+}
+
+fetch('/api/ui').then((r) => r.json()).then((d) => {
+  const img = document.getElementById('login-logo');
+  if (img && d.icon) img.src = '/assets/icons/' + d.icon + '.png';
+  startLoginBlink((d.icons || []).find((x) => x.id === d.icon));
+}).catch(() => {});
+</script>
+</body>
+</html>

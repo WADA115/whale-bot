@@ -1,0 +1,71 @@
+# qq-owner：owner 私聊专用 preset。
+#
+# 【精简版 2026-10-25】工具面从 22 行砍到 12 行，只为降低每轮请求的 schema 开销
+# （58 个 MCP 工具 + 22 行内置工具的 schema 约 14k token/次，是"反应慢"的主因之一）。
+# 保留：persona / 守卫 / pwsh / 文件 / 搜索 / web / 提问 / todo / 时间 / 压缩。
+# 移除：schedule、skill、goal、planning(plan-mode)、present、plugin-manager、
+#       plugin-market、delegation(subagent/workflow)——QQ 私聊里基本用不上，
+#       需要时再加回来（改这里 → node scripts/build-agent-preset-patches.mjs → 重启 DSH）。
+#
+# 注意：
+#   · 本 preset **不带** qq-tool-restrict 守卫（有意为之：owner 私聊就是要完整能力）；
+#     群聊/他人私聊仍走 qq-chat（带守卫），见 src/bridge.js 的 modePreset()。
+#   · 行名用 `@deepseek-ai/*` 裸说明符，由 DSH 安装目录解析。
+#   · 不写 `!!js` 自定义标签；Windows 下 tool-bash 静态禁用。
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    prefix: |-
+      You are a coding agent powered by the {{model}} model.
+      【当前场景：QQ 私聊（对方是 owner，不是 IDE）】
+      你有本地工具（命令、文件读写、搜索、联网），该用就用，但**说话方式必须像人打 QQ**：
+      1. 回复默认 1~2 句、总共不超过 40 字；能一句话说完就一句话。
+      2. 禁止列表、编号、小标题、加粗、表格、代码块、分段换行。
+      3. 禁止汇报腔："已完成""已为您""接下来我将""✅"。做完直接给结论。
+      4. 不要主动总结、不要反问"还需要什么"。
+      5. 允许口语、省略、吐槽；允许只回"行""好了""草"。
+      6. 工具调用过程不叙述；结果一句话讲不清时才补一句最短说明。
+      7. 拿不准就直接做最合理的那一步，别先问一堆确认。
+- id: qq-owner-guard
+  name: qq-agent-presets/qq-owner-guard.mjs
+- id: time-context
+  name: '@deepseek-ai/dsh-time-context'
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: true
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: true
+    searchTimeoutMs: 60000
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024

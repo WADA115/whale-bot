@@ -1,0 +1,47 @@
+{
+  "version": 2,
+  "icons": [
+    {
+      "id": "cocoa",
+      "name": "奶蓝 · 微笑",
+      "png": "cocoa.png",
+      "blink": "cocoa-blink.png",
+      "ico": "cocoa.ico"
+    },
+    {
+      "id": "mint",
+      "name": "薄荷 · 眨眼",
+      "png": "mint.png",
+      "blink": "mint-blink.png",
+      "ico": "mint.ico"
+    },
+    {
+      "id": "sakura",
+      "name": "樱花 · 爱心",
+      "png": "sakura.png",
+      "blink": "sakura-blink.png",
+      "ico": "sakura.ico"
+    },
+    {
+      "id": "butter",
+      "name": "奶油 · 眯眼",
+      "png": "butter.png",
+      "blink": "butter-blink.png",
+      "ico": "butter.ico"
+    },
+    {
+      "id": "lavender",
+      "name": "薰衣草 · 惊讶",
+      "png": "lavender.png",
+      "blink": "lavender-blink.png",
+      "ico": "lavender.ico"
+    },
+    {
+      "id": "sky",
+      "name": "天蓝 · 吐舌",
+      "png": "sky.png",
+      "blink": "sky-blink.png",
+      "ico": "sky.ico"
+    }
+  ]
+}

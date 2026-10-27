@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>使用说明 · 小鲸鱼控制台</title>
+<style>
+  :root{--ink:#14344a;--muted:#6b8ea3;--line:#e2eef5;--deep:#1b6f9c;--coral:#c9574a;--ok:#1d8a68}
+  *{box-sizing:border-box}
+  body{margin:0;color:var(--ink);font:14px/1.75 "微软雅黑","Microsoft YaHei",-apple-system,"Segoe UI",sans-serif;
+    background:radial-gradient(900px 420px at 6% -8%,#dff2fe 0,transparent 60%),
+      radial-gradient(760px 380px at 100% 0,#e6fbf3 0,transparent 56%),
+      linear-gradient(180deg,#f7fbfe,#eef6fa);min-height:100vh;padding:28px 18px}
+  .wrap{max-width:700px;margin:0 auto}
+  .head{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+  .logo{width:44px;height:44px;border-radius:13px;background:linear-gradient(120deg,#3aa7d6,#4cc4b0);
+    display:grid;place-items:center;font-size:23px;color:#fff}
+  h1{margin:0;font-size:19px}
+  .sub{font-size:12.5px;color:var(--muted)}
+  .card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:18px 20px;margin-bottom:12px;
+    box-shadow:0 10px 30px rgba(31,95,158,.07)}
+  h2{font-size:15px;color:var(--deep);margin:0 0 8px;display:flex;align-items:center;gap:8px}
+  h2 .n{width:20px;height:20px;border-radius:6px;background:#e9f5fd;color:#1b6f9c;font-size:11px;
+    display:grid;place-items:center;font-weight:600}
+  ol,ul{margin:6px 0;padding-left:20px}
+  li{margin:4px 0}
+  code{background:#f3f4f7;border-radius:5px;padding:1px 5px;font-size:12.5px;color:#b03030}
+  table{border-collapse:collapse;width:100%;font-size:12.8px;margin:8px 0}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left}
+  th{background:#f5f9fc;color:#243b55}
+  .tip{background:#fff8ef;border:1px solid #ffe3bd;border-radius:12px;padding:10px 13px;font-size:12.6px;color:#8a5a12;margin-top:8px}
+  a.back{display:inline-block;margin-top:4px;font-size:12.6px;color:var(--deep);text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div class="logo">🐳</div>
+    <div>
+      <h1>使用说明</h1>
+      <div class="sub">普通用户看这里就够；开发者细节在面板「使用说明」里</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">1</span>注册（30 秒）</h2>
+    <ol>
+      <li>打开 <code>http://127.0.0.1:3200</code></li>
+      <li>左侧填 <b>用户名</b>（2~24 字符）+ <b>密码</b>（6~128 位）</li>
+      <li>点「<b>注册</b>」——账户建在本机，自动登录</li>
+      <li>以后用同样的账号密码点「<b>登录</b>」</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">2</span>登录后能做什么</h2>
+    <table>
+      <tr><th>能改</th><th>不能改</th></tr>
+      <tr>
+        <td>我的人格卡、群聊触发、插话概率、表情概率、绑定 QQ、我的受信名单、我的记忆</td>
+        <td>模型、思考强度、内容审核、全局记忆、账户管理（这些是管理员的）</td>
+      </tr>
+    </table>
+    <div class="tip">你的设置只属于你自己，不会影响其他人。</div>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">3</span>忘记密码</h2>
+    <ol>
+      <li>登录页用户名下面点「<b>忘记密码？重置</b>」</li>
+      <li>确认后密码变成临时密码 <code>00000</code></li>
+      <li>页面会自动帮你登录 → 弹窗要求<b>设置新密码</b></li>
+      <li>设完就能用；临时密码立刻失效</li>
+    </ol>
+    <div class="tip">这台机器是自用的，不需要找管理员，也不用先输错密码。</div>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">4</span>进不去怎么办</h2>
+    <ul>
+      <li><b>页面打不开</b>：面板没启动。双击桌面「小鲸鱼」</li>
+      <li><b>提示用户名已存在</b>：换个名字，或让管理员删旧账户</li>
+      <li><b>注册按钮没反应</b>：Ctrl+F5 强刷；仍不行让管理员看日志</li>
+      <li><b>登录后只有「我的设置」</b>：正常，普通账户看不到全局配置</li>
+    </ul>
+  </div>
+
+  <div class="card" style="text-align:center">
+    <a class="back" href="/login.html">← 返回登录页</a>
+  </div>
+</div>
+</body>
+</html>
