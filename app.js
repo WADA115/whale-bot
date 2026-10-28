@@ -17,9 +17,10 @@ import crypto from 'node:crypto';
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const STATE = path.join(ROOT, 'state');
 const PORT = Number(process.env.QQB_PANEL_PORT || 3200);
-// SnowLuma 目录：优先 config.snowluma.homeDir，其次同级默认位置（迁移时只改配置）
+// SnowLuma 目录：只从 config.snowluma.homeDir 读；没配置就留空，由启动逻辑提示用户去填
+// （不写死任何本机路径：开源版本里每个人装的位置都不一样）
 const CONFIG_SNAPSHOT = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8')); } catch { return {}; } })();
-const SNOWLUMA_DIR = CONFIG_SNAPSHOT.snowluma?.homeDir || 'E:\\新建文件夹 (3)';
+const SNOWLUMA_DIR = CONFIG_SNAPSHOT.snowluma?.homeDir || '';
 const startAllScript = path.join(ROOT, 'start-all.ps1');
 const SNOWLUMA_EXE = `${SNOWLUMA_DIR}\\node.exe`;
 const SNOWLUMA_UI_PORT = 5099;   // SnowLuma 自带 WebUI
@@ -449,6 +450,7 @@ async function start(target) {
   }
   if (target === 'snowluma-unused') {
     // 直接跑 SnowLuma 自带的 node.exe：不弹控制台窗口，也不走 launcher.bat 的版本检查
+    if (!SNOWLUMA_DIR) return { ok: false, msg: '还没配置 SnowLuma 目录：请在 config.json 里填 snowluma.homeDir（形如 C:\\SnowLuma）' };
     spawnDetached(SNOWLUMA_EXE, ['index.mjs'], { cwd: SNOWLUMA_DIR });
     log('启动 SnowLuma');
     return { ok: true, msg: '正在启动 SnowLuma（隐藏窗口）…' };

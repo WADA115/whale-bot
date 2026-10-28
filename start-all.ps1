@@ -18,7 +18,7 @@ try {
   $cfgPath = Join-Path $repo 'config.json'
   if (Test-Path $cfgPath) { $cfgSnow = (Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json).snowluma.homeDir }
 } catch {}
-if (-not $cfgSnow) { $cfgSnow = 'E:\新建文件夹 (3)' }
+if (-not $cfgSnow) { $cfgSnow = '' }  # 不写死本机路径：没配就让下面的提示告诉用户去填
 $snowDir = $cfgSnow
 
 New-Item -ItemType Directory -Force -Path $state | Out-Null
@@ -53,7 +53,7 @@ if ($snowProc.Count -gt 0 -and -not (Test-Port 3000)) {
       Say ('SnowLuma 启动失败：' + $_.Exception.Message)
     }
   } else {
-    Say '找不到 SnowLuma（E:\新建文件夹 (3)\node.exe）'
+    Say ('找不到 SnowLuma：请先在 config.json 里填 snowluma.homeDir（当前值：' + $cfgSnow + '）')
   }
 } else {
   Say 'SnowLuma 已在运行'
