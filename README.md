@@ -2,6 +2,10 @@
 
 > 一个能记事、会换表情、还带控制台的 QQ 机器人：能聊天、看得懂图、记得住你，跑在自己的电脑上。
 
+[![CI](https://github.com/WADA115/whale-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/WADA115/whale-bot/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+
 ![登录页](docs/screenshots/login.png)
 
 > **先读这个**：本文最后一节「坑」是踩过的真实问题合集，装之前扫一眼能省好几个小时。
