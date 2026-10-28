@@ -720,9 +720,12 @@ function sanitizeRoleName(name) {
 
 // 管理员 QQ（ownerQQ）规范化：空值=未设置；必须是正整数 QQ 号。
 
-/** 开发者白名单：config.role.developers 里的 QQ 号（只认数字，最多 20 个）。 */
-function developerIds() {
-  const raw = cfg.role?.developers;
+/** 开发者白名单：config.role.developers 里的 QQ 号（只认数字，最多 20 个）。
+ *  注意：这个函数在模块作用域，不能直接引用 main() 里的 cfg，必须由调用方传进来
+ *  （之前写死引用 cfg，导致非管理员的群消息全部抛 "cfg is not defined"）。 */
+function developerIds(config = null) {
+  const cf = config ?? readJsonSafe(path.join(ROOT, 'config.json'), {});
+  const raw = cf.role?.developers;
   const list = Array.isArray(raw) ? raw : (typeof raw === 'string' ? raw.split(/[,，\s]+/) : []);
   const out = new Set();
   for (const item of list) {
@@ -730,7 +733,7 @@ function developerIds() {
     if (/^\d{5,12}$/.test(s)) out.add(s);
     if (out.size >= 20) break;
   }
-  if (cfg.ownerQQ) out.add(String(cfg.ownerQQ));
+  if (cf.ownerQQ) out.add(String(cf.ownerQQ));
   return out;
 }
 
@@ -2121,7 +2124,9 @@ function setMemoryOwner(owner) { activeMemoryOwner = owner || 'developer'; }
       searchKey = String(resolveSearchApiKey(loadSearchConfig(ROOT))?.key ?? '');
     } catch {}
     const apiKey = smart.apiKey || searchKey || process.env.DEEPSEEK_API_KEY || '';
-    const baseURL = String(smart.baseURL || 'https://api.deepseek.com/v1').replace(/\/+$/, '');
+    // 判断器默认跟随桥接当前探测到的 DSH 地址（DSH 每次启动端口都可能变，写死会 fetch failed）
+    const dshBase = String(cfg.dsh?.baseUrl || '').replace(/\/+$/, '');
+    const baseURL = String(smart.baseURL || dshBase || 'https://api.deepseek.com/v1').replace(/\/+$/, '');
     const model = smart.model || 'deepseek-flash';
     const body = String(text || '').trim();
     if (!apiKey || !body) return { addressed: false, reason: 'no-key-or-empty' };
@@ -11982,7 +11987,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       addressedForCtx = !!mentioned || !!named;
       // 开发者白名单：这里不能用后面才声明的 isDeveloper（TDZ 会直接抛错），单独算一份
       const senderIsDeveloper = String(event.user_id) === String(cfg.ownerQQ ?? '')
-        || developerIds().has(String(event.user_id ?? ''));
+        || developerIds(cfg).has(String(event.user_id ?? ''));
       if (hasMediaSeg && !plainText) {
         addressedForCtx = true;
         log(`群聊收到媒体消息（无文字），直接接住 ${key}`);
@@ -12072,7 +12077,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     if (!isSessionAllowedInCurrentMode(key)) return;
     if (!plainContent && !quoteTargetIsSelf) return;
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');
-    const isDeveloper = isOwner || developerIds().has(String(event.user_id ?? ''));
+    const isDeveloper = isOwner || developerIds(cfg).has(String(event.user_id ?? ''));
     const roleState = readRoleState();
 
     // 若该会话有挂起的提问/审批，先当作回答处理（用当前消息自己的文字，不含引用原文）。
@@ -13188,7 +13193,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
   bot.onGroupMessage(async (event) => {
     if (String(event?.sender?.user_id ?? '') === String(event?.self_id ?? '')
       || String(event?.user_id ?? '') === String(event?.self_id ?? '')) return;
-    try { await handleIncoming('group', event.group_id, event, withProfile(cfg, event.sender?.user_id ?? event.user_id)); } catch (error) { log('处理群消息出错:', error?.message ?? error); }  });
+    try { await handleIncoming('group', event.group_id, event, withProfile(cfg, event.sender?.user_id ?? event.user_id)); } catch (error) { log('处理群消息出错:', error?.message ?? error); if (error?.stack) log('[stack] ' + String(error.stack).split('\n').slice(0, 4).join(' | ')); }  });
   bot.onNotice('notify', async (event) => {
     try { await handlePokeNotice(event); } catch (error) { log('处理拍一拍事件出错:', error?.message ?? error); }
   });
