@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 先看常见问题（38 条坑）
+    url: https://github.com/WADA115/whale-bot/blob/main/FAQ.md
+    about: 八成问题这里已经写了：连不上 QQ、面板打不开、429 限速、记忆不对、语音不发声
+  - name: 安全问题（不要公开提）
+    url: https://github.com/WADA115/whale-bot/security/advisories/new
+    about: 私密报告漏洞，只有维护者能看到。不要在公开 Issue 里贴细节
+  - name: 怎么参与贡献
+    url: https://github.com/WADA115/whale-bot/blob/main/CONTRIBUTING.md
+    about: 改代码前后要跑哪些检查、文档怎么同步

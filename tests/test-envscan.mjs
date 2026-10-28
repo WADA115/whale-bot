@@ -25,7 +25,9 @@ for (const [a, b, want] of cases) {
 }
 
 // 2. 扫描结果结构
-const cfgBefore = fs.readFileSync(ROOT + '/config.json', 'utf8');
+// 干净 clone 里没有 config.json（被 .gitignore 排除），回退到示例配置
+const cfgPath = fs.existsSync(ROOT + '/config.json') ? ROOT + '/config.json' : ROOT + '/config.example.json';
+const cfgBefore = fs.readFileSync(cfgPath, 'utf8');
 const cfg = JSON.parse(cfgBefore);
 const r = await scanEnv({ root: ROOT, cfg });
 
@@ -48,9 +50,9 @@ const localUrl = r.items.filter((x) => x.url && /127\\.0\\.0\\.1|localhost/.test
 if (!localUrl.length) ok('没有把本地地址当下载链接');
 else bad('存在本地地址链接');
 
-// 4. 只读：扫描前后 config.json 不变、没有新增安装动作
-const cfgAfter = fs.readFileSync(ROOT + '/config.json', 'utf8');
-if (cfgBefore === cfgAfter) ok('扫描不改 config.json');
+// 4. 只读：扫描前后配置不变、没有新增安装动作
+const cfgAfter = fs.readFileSync(cfgPath, 'utf8');
+if (cfgBefore === cfgAfter) ok('扫描不改配置文件');
 else bad('扫描改了 config.json！');
 
 // 5. 扫描结果落盘只写 state/env-scan.json（由接口写，模块本身不写）
