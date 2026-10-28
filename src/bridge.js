@@ -11980,16 +11980,19 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       const hasMediaSeg = segs.some((s) => ['image', 'mface', 'record', 'video', 'file'].includes(String(s?.type ?? '')));
       // 记录这条消息是否冲机器人来的（语境引擎要用它区分"对谁说"）
       addressedForCtx = !!mentioned || !!named;
+      // 开发者白名单：这里不能用后面才声明的 isDeveloper（TDZ 会直接抛错），单独算一份
+      const senderIsDeveloper = String(event.user_id) === String(cfg.ownerQQ ?? '')
+        || developerIds().has(String(event.user_id ?? ''));
       if (hasMediaSeg && !plainText) {
         addressedForCtx = true;
         log(`群聊收到媒体消息（无文字），直接接住 ${key}`);
       } else if (isProfileTrusted(event.sender?.user_id ?? event.user_id)) {
-      addressedForCtx = true;
-      log('群聊受信成员发言，直接接住 ' + key);
-    } else if (isDeveloper) {
+        addressedForCtx = true;
+        log('群聊受信成员发言，直接接住 ' + key);
+      } else if (senderIsDeveloper) {
         // 开发者白名单：不用 @ 也接
         addressedForCtx = true;
-        log(`群聊开发者发言，直接接住 ${key}（）`);
+        log(`群聊开发者发言，直接接住 ${key}`);
       } else if (!mentioned && !named) {
         if (groupTrigger !== 'smart') {
           log(`群聊未点名，跳过 ${key}（${plainText.slice(0, 40)}）`);
