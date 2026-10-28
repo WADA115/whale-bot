@@ -315,10 +315,60 @@
         <div class="field"><label>随机插话</label><div class="val"><input type="range" id="cfg-chime" min="0" max="100" step="1"><span class="num" id="chime-num">18%</span></div></div>
         <div class="field"><label>表达层</label><div class="val"><select id="cfg-expr"><option value="1">开（自己补发表情）</option><option value="0">关</option></select></div></div>
         <div class="field"><label>表情包概率</label><div class="val"><input type="range" id="cfg-sticker" min="0" max="100" step="1"><span class="num" id="sticker-num">22%</span></div></div>
+        <div class="field"><label>颜文字概率</label><div class="val"><input type="range" id="cfg-kao" min="0" max="100" value="15" style="max-width:180px"><span class="hint" id="kao-num">15%</span></div></div>
         <div class="field"><label>小黄脸概率</label><div class="val"><input type="range" id="cfg-face" min="0" max="100" step="1"><span class="num" id="face-num">12%</span></div></div>
+        <div class="field">
+          <label>情绪强度 <span class="hint" id="cfg-emo-val">3/5</span></label>
+          <div class="val">
+            <input type="range" id="cfg-emo" min="1" max="5" step="1" value="3" style="max-width:220px">
+            <label class="sw"><input type="checkbox" id="cfg-emo-auto"> 自动（按人格卡和当下语境判断）</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>权重 <span class="hint">由人格卡和设定智能调控</span></label>
+          <div class="val" style="flex-direction:column;align-items:flex-start;gap:6px">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <span class="hint" style="width:72px">记忆权重</span>
+              <input type="range" id="cfg-wmem" min="1" max="5" step="1" value="3" style="max-width:180px">
+              <span class="hint" id="cfg-wmem-val">3/5</span>
+              <span class="hint">1 少提旧事 · 5 爱翻旧账</span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <span class="hint" style="width:72px">情绪权重</span>
+              <input type="range" id="cfg-wemo" min="1" max="5" step="1" value="3" style="max-width:180px">
+              <span class="hint" id="cfg-wemo-val">3/5</span>
+              <span class="hint">1 压住 · 5 放大</span>
+            </div>
+            <label class="sw"><input type="checkbox" id="cfg-wauto"> 自动（按人格卡 + 设定 + 语境判断，忽略上面的值）</label>
+          </div>
+        </div>
+
         <div class="field"><label>内容审核</label><div class="val"><select id="cfg-safety"><option value="1">开</option><option value="0">关</option></select></div></div>
         <div class="field"><label>压缩阈值</label><div class="val"><input type="number" id="cfg-compress" min="4" max="200" step="2"><span class="hint">超过多少条发言触发摘要</span></div></div>
-      </section>
+
+
+        <div class="field" style="border-top:1px dashed #eef4f8;padding-top:10px;margin-top:6px">
+          <label>对话强度 <span class="hint">改完点保存；太大容易像刷屏</span></label>
+          <div class="val" style="flex-direction:column;align-items:flex-start;gap:8px">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <span class="hint" style="width:96px">最多几条气泡</span>
+              <input type="range" id="cfg-bubbles" min="1" max="6" step="1" value="5" style="max-width:200px">
+              <span class="hint" id="cfg-bubbles-val">5 条</span>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <span class="hint" style="width:96px">单条字数上限</span>
+              <input type="range" id="cfg-bubchars" min="10" max="300" step="5" value="40" style="max-width:200px">
+              <span class="hint" id="cfg-bubchars-val">40 字</span>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <span class="hint" style="width:96px">条间间隔</span>
+              <input type="number" id="cfg-gapmin" min="0.2" max="15" step="0.1" value="0.6" style="max-width:90px"> ~
+              <input type="number" id="cfg-gapmax" min="0.2" max="15" step="0.1" value="1.4" style="max-width:90px"> 秒
+              <span class="hint">上限 15 秒；间隔越短越像连珠炮</span>
+            </div>
+          </div>
+        </div>      </section>
     </div>
     <div class="bar">
       <button class="primary" onclick="saveSettings()">保存设置</button>
@@ -326,6 +376,15 @@
       <div class="spacer"></div>
       <span class="hint" id="settings-msg">改完点保存；模型需重启桥接才生效，人格即时生效</span>
     </div>
+    <section class="panel" style="margin-top:16px" id="update-card">
+      <h2>版本与更新 <span class="tag" id="ver-tag">—</span></h2>
+      <div class="val" style="margin-bottom:6px">
+        <button onclick="checkUpdate()">检查更新</button>
+        <span class="hint" id="update-msg"></span>
+      </div>
+      <div id="update-body" class="hint"></div>
+    </section>
+
     <section class="panel" style="margin-top:16px" id="devmode-panel">
       <h2>开发者模式 <span class="tag" id="devmode-tag">—</span></h2>
       <p class="hint" style="margin:0 0 10px">
@@ -405,7 +464,21 @@
         </p>
       </div>
       <div class="mem-grid" id="mem-stats"></div>
-      <div class="mem-tabs" id="mem-tabs" data-counts="">
+            <div id="vault-card" class="panel" style="margin:8px 0 14px">
+        <h2 style="margin-top:0">记忆隐藏区 <span class="tag">平时不注入</span></h2>
+        <p class="hint" style="margin:0 0 8px">
+          这里的内容<strong>不会</strong>进入日常提示词。只有聊天里出现你设的关键词时，才会被检索出来，
+          由模型判断场合是否合适再决定提不提。
+        </p>
+        <div class="val" style="margin-bottom:6px">
+          <input id="vault-text" placeholder="要藏起来的事，例如：他小时候养过一只叫团子的猫" style="flex:1;min-width:240px">
+          <input id="vault-kw" placeholder="关键词（逗号分隔）" style="max-width:220px">
+          <button class="primary" onclick="addVault()">加入隐藏区</button>
+        </div>
+        <div id="vault-list"></div>
+      </div>
+
+<div class="mem-tabs" id="mem-tabs" data-counts="">
         <button class="active" data-tier="long" onclick="memTab('long')">长期事实</button>
         <button data-tier="short" onclick="memTab('short')">短期事实</button>
         <button data-tier="keyword" onclick="memTab('keyword')">关键词</button>
@@ -452,7 +525,7 @@
   </div>
 
   <footer>
-    小鲸鱼控制台 · 本地 3200 端口 · 数据每 3 秒刷新 ·
+    小鲸鱼控制台 · <span id=fw-ver>v0.4.3</span> · 本地 3200 端口 · 数据每 3 秒刷新 ·
     <a href="#" onclick="openDisclaimer();return false;">免责声明</a>
   </footer>
 </div>
@@ -510,12 +583,12 @@ function showView(name) {
     const btn = $('nav-' + v);
     if (btn) btn.classList.toggle('active', v === name);
   }
-  if (name === 'settings') loadSettings();
+  if (name === 'settings') { loadSettings(); loadVersion(); }
   if (name === 'memory') loadMemory();
   if (name === 'snowluma') loadFrame();
   if (name === 'help') loadHelp();
   if (name === 'changelog') loadChangelog();
-  if (name === 'memory') loadAutoMemState();
+  if (name === 'memory') { loadAutoMemState(); loadVault(); }
   if (name === 'settings') {
     loadUi();
     loadPluginsUI();
@@ -652,6 +725,8 @@ async function loadSettings() {
   // 普通账户跳过全局配置：/api/config 对它返回 403，cfg 会是错误对象
   if (me && !me.isDeveloper) return;
   try { cfg = await (await fetch('/api/config')).json(); } catch { return; }
+  // 首次进设置页时登录态可能还没就绪，拿到错误对象就晚点重试一次
+  if (!cfg || !cfg.dsh || !cfg.role) { setTimeout(() => { if (location.hash.includes('settings')) loadSettings(); }, 800); return; }
   $('cfg-model').innerHTML = cfg.dsh.models.map((m) => `<option value="${m}">${m}</option>`).join('');
   $('cfg-model').value = cfg.dsh.model;
   $('model-hint').textContent = cfg.dsh.model === 'deepseek-flash' ? '快、便宜' : '更聪明、更慢';
@@ -673,15 +748,69 @@ async function loadSettings() {
   $('cfg-sticker').value = st; $('sticker-num').textContent = st + '%';
   const fc = Math.round((cfg.role.expression?.faceChance ?? 0.12) * 100);
   $('cfg-face').value = fc; $('face-num').textContent = fc + '%';
+  const kc = Math.round((cfg.role.expression?.kaomojiChance ?? 0.15) * 100);
+  $('cfg-kao').value = kc; $('kao-num').textContent = kc + '%';
   $('cfg-safety').value = cfg.safety.enabled ? '1' : '0';
   $('cfg-compress').value = cfg.role.memory?.compressAfterTurns ?? 24;
+  if ($('cfg-emo')) {
+    $('cfg-emo').value = cfg.role.emotion?.level ?? 3;
+    $('cfg-emo-val').textContent = $('cfg-emo').value + '/5';
+    $('cfg-emo-auto').checked = cfg.role.emotion?.auto !== false;
+    $('cfg-emo').addEventListener('input', (e) => { $('cfg-emo-val').textContent = e.target.value + '/5'; });
+  }
+  if ($('cfg-bubbles')) {
+    const r = cfg.role.reply ?? {};
+    $('cfg-bubbles').value = r.bubblesMax ?? 5;
+    $('cfg-bubbles-val').textContent = $('cfg-bubbles').value + ' 条';
+    $('cfg-bubchars').value = r.bubbleMaxChars ?? 40;
+    $('cfg-bubchars-val').textContent = $('cfg-bubchars').value + ' 字';
+    $('cfg-gapmin').value = ((r.gapMinMs ?? 600) / 1000).toFixed(1);
+    $('cfg-gapmax').value = ((r.gapMaxMs ?? 1400) / 1000).toFixed(1);
+    $('cfg-bubbles').addEventListener('input', (e) => { $('cfg-bubbles-val').textContent = e.target.value + ' 条'; });
+    $('cfg-bubchars').addEventListener('input', (e) => { $('cfg-bubchars-val').textContent = e.target.value + ' 字'; });
+  }
+  if ($('cfg-wmem')) {
+    const w = cfg.role.weights ?? {};
+    $('cfg-wmem').value = w.memory?.value ?? 3;
+    $('cfg-wmem-val').textContent = $('cfg-wmem').value + '/5';
+    $('cfg-wemo').value = w.emotion?.value ?? 3;
+    $('cfg-wemo-val').textContent = $('cfg-wemo').value + '/5';
+    $('cfg-wauto').checked = w.auto !== false;
+    $('cfg-wmem').addEventListener('input', (e) => { $('cfg-wmem-val').textContent = e.target.value + '/5'; });
+    $('cfg-wemo').addEventListener('input', (e) => { $('cfg-wemo-val').textContent = e.target.value + '/5'; });
+  }
+  loadVersion();
   loadPlugins();
 }
 
-['cfg-chime', 'cfg-sticker', 'cfg-face'].forEach((id) => {
+['cfg-chime', 'cfg-sticker', 'cfg-face', 'cfg-kao'].forEach((id) => {
   const el = $(id);
   if (el) el.addEventListener('input', (e) => { $(id.replace('cfg-', '') + '-num').textContent = e.target.value + '%'; });
 });
+
+async function checkUpdate() {
+  $('update-msg').textContent = '检查中…';
+  $('update-body').innerHTML = '';
+  try {
+    const d = await (await fetch('/api/update/check?force=1')).json();
+    if (d.error) { $('update-msg').textContent = d.error; return; }
+    $('update-msg').textContent = d.updateAvailable
+      ? ('有新版本 ' + d.latest + '（当前 ' + d.current + '）')
+      : ('已是最新：' + d.current);
+    $('update-body').innerHTML = d.updateAvailable
+      ? `<a href="${esc(d.url)}" target="_blank" rel="noopener">打开发布页下载 →</a><br><span class="hint">${esc((d.notes || '').slice(0, 200))}</span>`
+      : '';
+  } catch (error) {
+    $('update-msg').textContent = '检查失败：' + error.message;
+  }
+}
+
+async function loadVersion() {
+  try {
+    const v = await (await fetch('/api/version')).json();
+    if ($('ver-tag')) $('ver-tag').textContent = 'v' + v.version;
+  } catch {}
+}
 
 async function saveSettings() {
   const patch = {
@@ -694,8 +823,18 @@ async function saveSettings() {
     'role.expression.enabled': $('cfg-expr').value === '1',
     'role.expression.stickerChance': Number($('cfg-sticker').value) / 100,
     'role.expression.faceChance': Number($('cfg-face').value) / 100,
+    'role.expression.kaomojiChance': Number($('cfg-kao').value) / 100,
     'safety.enabled': $('cfg-safety').value === '1',
-    'role.memory.compressAfterTurns': Number($('cfg-compress').value)
+    'role.memory.compressAfterTurns': Number($('cfg-compress').value),
+    'role.weights.auto': $('cfg-wauto').checked,
+    'role.weights.memory.value': Number($('cfg-wmem').value),
+    'role.weights.emotion.value': Number($('cfg-wemo').value),
+    'role.reply.bubblesMax': Number($('cfg-bubbles').value),
+    'role.reply.bubbleMaxChars': Number($('cfg-bubchars').value),
+    'role.reply.gapMinMs': Math.round(Number($('cfg-gapmin').value) * 1000),
+    'role.reply.gapMaxMs': Math.round(Number($('cfg-gapmax').value) * 1000),
+    'role.emotion.level': Number($('cfg-emo').value),
+    'role.emotion.auto': $('cfg-emo-auto').checked
   };
   const json = await (await fetch('/api/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })).json();
   flash(`已保存 ${json.applied?.length ?? 0} 项` + (json.rejected?.length ? `（忽略 ${json.rejected.join(',')}）` : ''), 'settings-msg');
@@ -1065,6 +1204,11 @@ async function loadPluginsUI() {
         <b>${esc(p.title || p.name)}</b>
         <span class="ver">v${esc(p.version || '?')}</span>
         <span class="state">${p.enabled ? '已启用' : '未启用'}</span>
+        ${p.builtin
+          ? '<span class="tag">内置</span>'
+          : (p.verified && p.verified.ok
+            ? '<span class="tag" style="background:#e7f7ef;color:#1d8a68">已验证</span>'
+            : '<span class="tag" style="background:#fff3e0;color:#a56a12">未验证</span>')}
       </div>
       <div class="pl-desc">${esc(p.description || '（没有说明）')}</div>
       ${p.risk ? `<div class="pl-risk">⚠ ${esc(p.risk)}</div>` : ''}
@@ -1072,6 +1216,7 @@ async function loadPluginsUI() {
         <button class="${p.enabled ? 'ghost' : 'primary'}" onclick="togglePlugin('${esc(p.name)}', ${p.enabled ? 'false' : 'true'})">
           ${p.enabled ? '停用' : '启用'}
         </button>
+        ${p.builtin ? '' : `<button class="mini" onclick="verifyPlugin('${esc(p.name)}')">${p.verified && p.verified.ok ? '重新验证' : '验证'}</button>`}
         ${p.name === 'learning' ? '<button class="mini" onclick="loadLearning()">刷新学习数据</button>' : ''}
         <span class="hint">${p.enabled ? '改完重启桥接生效' : ''}</span>
       </div>
@@ -1080,6 +1225,21 @@ async function loadPluginsUI() {
   const box = $('learning-box');
   if (box) box.style.display = lr ? '' : 'none';
   if (lr) loadLearning();
+}
+
+async function verifyPlugin(name) {
+  flash('验证中…', 'settings-msg');
+  const res = await fetch('/api/plugins/verify', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  const json = await res.json();
+  if (json.ok) {
+    flash('✅ 验证通过' + ((json.permissions || []).length ? '（权限：' + json.permissions.join('、') + '）' : ''), 'settings-msg');
+  } else {
+    flash('❌ 未通过：' + (json.msg || (json.problems || []).join('；')), 'settings-msg');
+  }
+  await loadPluginsUI();
 }
 
 async function togglePlugin(name, enabled) {
@@ -1183,6 +1343,35 @@ function renderProfileBox() {
     </div>
 
     <div class="field">
+      <label>情绪强度 <span class="hint" id="pf-emo-val">3/5</span></label>
+      <div class="val">
+        <input type="range" id="pf-emo" min="1" max="5" step="1" value="3" style="max-width:200px">
+        <label class="sw"><input type="checkbox" id="pf-emo-auto"> 自动调节</label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>对话强度 <span class="hint">只影响你自己的私聊</span></label>
+      <div class="val" style="flex-direction:column;align-items:flex-start;gap:6px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span class="hint" style="width:90px">气泡数</span>
+          <input type="range" id="pf-bubbles" min="1" max="6" step="1" value="5" style="max-width:180px">
+          <span class="hint" id="pf-bubbles-val">5 条</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span class="hint" style="width:90px">单条字数</span>
+          <input type="range" id="pf-bubchars" min="10" max="300" step="5" value="40" style="max-width:180px">
+          <span class="hint" id="pf-bubchars-val">40 字</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span class="hint" style="width:90px">条间间隔</span>
+          <input type="number" id="pf-gapmin" min="0.2" max="15" step="0.1" value="0.6" style="max-width:80px"> ~
+          <input type="number" id="pf-gapmax" min="0.2" max="15" step="0.1" value="1.4" style="max-width:80px"> 秒
+        </div>
+      </div>
+    </div>
+
+    <div class="field">
       <label>语音</label>
       <div class="val">
         <label class="sw"><input type="checkbox" id="pf-voice" ${profile.behavior?.voiceReply ? 'checked' : ''}> 允许它给我发语音</label>
@@ -1210,7 +1399,8 @@ function renderProfileBox() {
       <label>表情</label>
       <div class="val">
         <label class="sw"><input type="checkbox" id="pf-expr" ${b.expressionOn === false ? '' : 'checked'}> 允许自己发表情</label>
-        <span class="hint">表情包</span><input type="range" id="pf-sticker" min="0" max="100" value="${Math.round((b.stickerChance ?? 0.22) * 100)}" style="max-width:110px">
+        <span class="hint">颜文字</span><input type="range" id="pf-kao" min="0" max="100" value="15" style="max-width:140px">
+      <span class="hint">表情包</span><input type="range" id="pf-sticker" min="0" max="100" value="${Math.round((b.stickerChance ?? 0.22) * 100)}" style="max-width:110px">
         <span class="hint">小黄脸</span><input type="range" id="pf-face" min="0" max="100" value="${Math.round((b.faceChance ?? 0.12) * 100)}" style="max-width:110px">
       </div>
     </div>
@@ -1231,6 +1421,26 @@ function renderProfileBox() {
   `;
 
   $('pf-trigger').value = b.groupTrigger || 'smart';
+  if ($('pf-kao')) {
+    $('pf-kao').value = Math.round((b.kaomojiChance ?? 0.15) * 100);
+  }
+  if ($('pf-bubbles')) {
+    const rp = b.reply ?? {};
+    $('pf-bubbles').value = rp.bubblesMax ?? 5;
+    $('pf-bubbles-val').textContent = $('pf-bubbles').value + ' 条';
+    $('pf-bubchars').value = rp.bubbleMaxChars ?? 40;
+    $('pf-bubchars-val').textContent = $('pf-bubchars').value + ' 字';
+    $('pf-gapmin').value = ((rp.gapMinMs ?? 600) / 1000).toFixed(1);
+    $('pf-gapmax').value = ((rp.gapMaxMs ?? 1400) / 1000).toFixed(1);
+    $('pf-bubbles').addEventListener('input', (e) => { $('pf-bubbles-val').textContent = e.target.value + ' 条'; });
+    $('pf-bubchars').addEventListener('input', (e) => { $('pf-bubchars-val').textContent = e.target.value + ' 字'; });
+  }
+  if ($('pf-emo')) {
+    $('pf-emo').value = b.emotion?.level ?? 3;
+    $('pf-emo-val').textContent = $('pf-emo').value + '/5';
+    $('pf-emo-auto').checked = b.emotion?.auto !== false;
+    $('pf-emo').addEventListener('input', (e) => { $('pf-emo-val').textContent = e.target.value + '/5'; });
+  }
   if ($('pf-model')) $('pf-model').value = profile.model || '';
   const pcs = $('pf-persona-cards');
   if (pcs) {
@@ -1293,7 +1503,15 @@ async function saveProfile() {
       expressionOn: $('pf-expr').checked,
       stickerChance: Number($('pf-sticker').value) / 100,
       faceChance: Number($('pf-face').value) / 100,
-      voiceReply: $('pf-voice') ? $('pf-voice').checked : false
+      kaomojiChance: $('pf-kao') ? Number($('pf-kao').value) / 100 : 0.15,
+      voiceReply: $('pf-voice') ? $('pf-voice').checked : false,
+      emotion: { level: Number($('pf-emo') ? $('pf-emo').value : 3), auto: $('pf-emo-auto') ? $('pf-emo-auto').checked : true },
+      reply: $('pf-bubbles') ? {
+        bubblesMax: Number($('pf-bubbles').value),
+        bubbleMaxChars: Number($('pf-bubchars').value),
+        gapMinMs: Math.round(Number($('pf-gapmin').value) * 1000),
+        gapMaxMs: Math.round(Number($('pf-gapmax').value) * 1000)
+      } : undefined
     },
     trusted: profile.trusted || []
   };
@@ -1341,6 +1559,47 @@ async function loadMemory() {
   ];
   $('mem-stats').innerHTML = counts.map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('');
   renderMemoryBody();
+}
+
+let vaultItems = [];
+
+async function loadVault() {
+  try {
+    const d = await (await fetch('/api/memory/vault')).json();
+    vaultItems = d.list || [];
+    const box = $('vault-list');
+    if (!box) return;
+    box.innerHTML = vaultItems.length
+      ? vaultItems.map((v) => `
+        <div class="mem-item">
+          <span class="txt">${esc(v.text)}</span>
+          <span class="meta">${(v.keywords || []).length ? '关键词：' + esc((v.keywords || []).join('、')) : '无关键词'} · 命中 ${v.hits || 0} 次</span>
+          <button class="mini danger" onclick="delVault('${esc(v.id)}')">删除</button>
+        </div>`).join('')
+      : '<div class="topic">隐藏区是空的</div>';
+  } catch {}
+}
+
+async function addVault() {
+  const text = $('vault-text').value.trim();
+  if (!text) return;
+  const keywords = $('vault-kw').value.trim();
+  const res = await fetch('/api/memory/vault', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op: 'add', text, keywords })
+  });
+  const json = await res.json();
+  if (json.ok) { $('vault-text').value = ''; $('vault-kw').value = ''; await loadVault(); }
+  else alert(json.msg || '保存失败');
+}
+
+async function delVault(id) {
+  if (!confirm('从隐藏区删除这条？')) return;
+  await fetch('/api/memory/vault', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op: 'delete', id })
+  });
+  await loadVault();
 }
 
 async function loadAutoMemState() {
@@ -1684,6 +1943,8 @@ fetch('/api/auth/status').then((r) => r.json()).then((s) => {
   if (el) el.textContent = me.user || '';
   applyRole();
   maybeForceChange();
+  // 身份就绪后再补一次设置页数据（首屏直接打开 #settings 时配置可能还没拉回来）
+  try { if ((location.hash || '').includes('settings') && me.isDeveloper) { loadSettings(); loadVersion(); } } catch {}
   loadUi();
 }).catch(() => {});
 

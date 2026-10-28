@@ -3,20 +3,23 @@
   [switch]$Once
 )
 
-# 桥接守护：每 30 秒探一次 3100 端口，挂了就自动拉起。
+# 守护：每 30 秒探一次 3100（桥接）和 3199（语音识别），挂了自动拉起。
 #
-# 设计要点：
-#   · 单实例靠 state\watchdog.pid，内容为 "PID|安装目录"——迁移/多安装时不会互相误判；
-#   · 存活状态靠 state\watchdog.beat（心跳），状态面板直接看文件时间，不查进程；
-#   · 同一分钟内最多拉起一次，防止反复失败刷屏；
-#   · DSH 端口变了不用管：桥接自己会探测并改写 config。
+# 设计要点（和旧版一致，只是多管一个服务）：
+#   · 单实例靠 state\watchdog.pid，内容为 "PID|安装目录"
+#   · 存活状态靠 state\watchdog.beat（心跳），面板直接看文件时间
+#   · 每个服务独立退避：同一服务 60 秒内最多拉起一次，每小时最多 5 次
+#   · 语音识别用 start-asr.bat /silent 拉起，脚本自己会找 Python 和依赖
+#   · 失败原因写 state\logs\watchdog.log，不再静默
+
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $MyInvocation.MyCommand.Path
 $state = Join-Path $repo 'state'
-$logDir = Join-Path $state 'logs'; if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }; $logFile = Join-Path $logDir 'watchdog.log'
+$logDir = Join-Path $state 'logs'
+if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
+$logFile = Join-Path $logDir 'watchdog.log'
 $pidFile = Join-Path $state 'watchdog.pid'
 $beatFile = Join-Path $state 'watchdog.beat'
-$port = 3100
 
 New-Item -ItemType Directory -Force -Path $state | Out-Null
 
@@ -33,6 +36,13 @@ function Test-Port([int]$p) {
     $ok = $task.Wait(800) -and $client.Connected
     $client.Close()
     return $ok
+  } catch { return $false }
+}
+
+function Test-AsrHealth {
+  try {
+    $r = Invoke-RestMethod -Uri 'http://127.0.0.1:3199/health' -TimeoutSec 2
+    return ($r -and $r.ok -eq $true)
   } catch { return $false }
 }
 
@@ -61,33 +71,71 @@ Set-Content -Path $pidFile -Value ($PID.ToString() + '|' + $repo) -Encoding UTF8
 Write-Heartbeat
 W ('守护启动（PID ' + $PID + '，间隔 ' + $IntervalSec + ' 秒）')
 
-$restarts = 0
-$lastRestartAt = $null
+$services = @(
+  @{ Name = 'bridge'; Port = 3100; Kind = 'bridge' },
+  @{ Name = 'asr'; Port = 3199; Kind = 'asr' }
+)
+$restarts = @{}
+$lastRestartAt = @{}
+$hourWindow = @{}
+
+function Can-Restart($name) {
+  $now = Get-Date
+  if ($lastRestartAt[$name] -and ($now - $lastRestartAt[$name]).TotalSeconds -lt 60) {
+    return $false
+  }
+  $window = $hourWindow[$name]
+  if (-not $window -or ($now - $window.Start).TotalHours -ge 1) {
+    $hourWindow[$name] = @{ Start = $now; Count = 0 }
+  }
+  if ($hourWindow[$name].Count -ge 5) { return $false }
+  return $true
+}
+
+function Start-ServiceByName($svc) {
+  $name = $svc.Name
+  $restarts[$name] = 1 + [int]($restarts[$name])
+  $lastRestartAt[$name] = Get-Date
+  if (-not $hourWindow[$name]) { $hourWindow[$name] = @{ Start = Get-Date; Count = 0 } }
+  $hourWindow[$name].Count = 1 + [int]($hourWindow[$name].Count)
+
+  W ('[' + $name + '] 检测到未运行，第 ' + $restarts[$name] + ' 次拉起')
+  try {
+    if ($svc.Kind -eq 'bridge') {
+      $env:DEEPSEEK_API_KEY = [Environment]::GetEnvironmentVariable('DEEPSEEK_API_KEY', 'User')
+      Start-Process -FilePath 'node' -ArgumentList 'src\bridge.js' -WorkingDirectory $repo -WindowStyle Hidden -ErrorAction Stop
+    } else {
+      $bat = Join-Path $repo 'start-asr.bat'
+      if (-not (Test-Path $bat)) { throw '找不到 start-asr.bat' }
+      Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('start "" /min "' + $bat + '" /silent') -WorkingDirectory $repo -WindowStyle Hidden -ErrorAction Stop
+    }
+    Start-Sleep -Seconds 10
+    $ok = Test-Port $svc.Port
+    if ($svc.Kind -eq 'asr' -and $ok) { $ok = Test-AsrHealth }
+    if ($ok) { W ('[' + $name + '] ✓ 已恢复') }
+    else { W ('[' + $name + '] ✗ 拉起后仍不通（看 state\logs\' + $name + '.log）') }
+  } catch {
+    W ('[' + $name + '] ✗ 拉起失败：' + $_.Exception.Message)
+  }
+}
 
 try {
   while ($true) {
-    $up = Test-Port $port
+    foreach ($svc in $services) {
+      $name = $svc.Name
+      $up = Test-Port $svc.Port
+      if ($up -and $svc.Kind -eq 'asr') { $up = Test-AsrHealth }
 
-    if (-not $up) {
-      Start-Sleep -Seconds 3
-      if (Test-Port $port) {
-        W '端口短暂不通后恢复，不处理'
-      } else {
-        if ($lastRestartAt -and ((Get-Date) - $lastRestartAt).TotalSeconds -lt 60) {
-          W '刚重启过，等待下一轮'
+      if (-not $up) {
+        Start-Sleep -Seconds 3
+        $up2 = Test-Port $svc.Port
+        if ($up2 -and $svc.Kind -eq 'asr') { $up2 = Test-AsrHealth }
+        if ($up2) {
+          W ('[' + $name + '] 短暂不通后恢复，不处理')
+        } elseif (-not (Can-Restart $name)) {
+          W ('[' + $name + '] 刚重启过或超过每小时 5 次，等待下一轮')
         } else {
-          $restarts += 1
-          $lastRestartAt = Get-Date
-          W ('检测到桥接未运行，第 ' + $restarts + ' 次拉起')
-          try {
-            $env:DEEPSEEK_API_KEY = [Environment]::GetEnvironmentVariable('DEEPSEEK_API_KEY', 'User')
-            Start-Process -FilePath 'node' -ArgumentList 'src\bridge.js' `
-              -WorkingDirectory $repo -WindowStyle Hidden -ErrorAction Stop
-            Start-Sleep -Seconds 10
-            if (Test-Port $port) { W '✓ 桥接已恢复' } else { W '✗ 拉起后仍不通（看 bridge.log）' }
-          } catch {
-            W ('✗ 拉起失败：' + $_.Exception.Message)
-          }
+          Start-ServiceByName $svc
         }
       }
     }

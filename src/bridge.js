@@ -29,6 +29,12 @@ import { loadSearchConfig, resolveSearchApiKey } from './web-search.js';
 // 记忆内核：长期（设定/晋升事实）+ 短期（TTL 淘汰）+ 会话摘要
 import { createMemoryCore, createMemoryStore } from './memory-core.js';
 import { judge as judgeAutoMemory } from './auto-memory.js';
+import { BUILTIN_PLUGINS } from './plugin-verify.js';
+import { createPluginHost } from './plugin-host.js';
+import { clampLevel, autoEmotionLevel, emotionPrompt } from './emotion.js';
+import { pickKaomoji } from './kaomoji.js';
+import { normalizeReplyShape, pickGapMs } from './reply-shape.js';
+import { resolveWeights, memoryBudget, memoryHitLimit } from './weights.js';
 // 语境引擎：追踪每个会话的在场人、当前话题、还没回应的问句
 import { createContextEngine } from './context-engine.js';
 // 出站内容审核（最后一道闸）
@@ -114,7 +120,7 @@ function isProfileTrusted(senderId) {
 }
 
 /** 把档案里的行为参数叠到这份 cfg 副本上；不动全局 cfg。 */
-function withProfile(cfg, senderId) {
+function withProfile(cfg, senderId, kind = '') {
   const p = profileForSender(senderId);
   activeProfile = p;
   if (!p) return cfg;
@@ -129,8 +135,20 @@ function withProfile(cfg, senderId) {
         ...(cfg.role?.expression ?? {}),
         ...(typeof b.expressionOn === 'boolean' ? { enabled: b.expressionOn } : {}),
         ...(typeof b.stickerChance === 'number' ? { stickerChance: b.stickerChance } : {}),
-        ...(typeof b.faceChance === 'number' ? { faceChance: b.faceChance } : {})
+        ...(typeof b.faceChance === 'number' ? { faceChance: b.faceChance } : {}),
+        ...(typeof b.kaomojiChance === 'number' ? { kaomojiChance: b.kaomojiChance } : {})
       }
+    },
+    // 回复形态：只有私聊用本人设置（群聊统一走全局，避免互相干扰）
+    ...(kind === 'private' && b.reply && typeof b.reply === 'object'
+      ? { reply: { ...(cfg.role?.reply ?? {}), ...b.reply } }
+      : {}),
+    // 情绪强度：本人档案优先（只影响他自己的会话）
+    emotion: {
+      ...(cfg.role?.emotion ?? {}),
+      ...(b.emotion && typeof b.emotion === 'object'
+        ? { level: Math.max(1, Math.min(5, Math.round(Number(b.emotion.level) || 3))), auto: b.emotion.auto !== false }
+        : {})
     },
     // 语音：本人档案里开/关优先于全局（只影响他自己的会话）
     socialV2: {
@@ -1634,12 +1652,25 @@ async function loadPlugins() {
     const base = path.join(dir, entry.name);
     const manifest = (() => { try { return JSON.parse(fs.readFileSync(path.join(base, 'manifest.json'), 'utf8')); } catch { return null; } })();
     if (!manifest || manifest.enabled === false) continue;
+    // 非内置插件必须通过验证（面板里点「验证」后写入 state/plugins-verified.json）
+    if (!BUILTIN_PLUGINS.includes(entry.name)) {
+      let verified = null;
+      try {
+        const all = JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'plugins-verified.json'), 'utf8'));
+        verified = all[entry.name];
+      } catch {}
+      if (!verified || !verified.ok) {
+        log(`[plugin] 跳过未验证插件：${entry.name}（先在面板里验证）`);
+        continue;
+      }
+    }
     const entryFile = path.join(base, manifest.main ?? 'index.mjs');
     if (!fs.existsSync(entryFile)) continue;
     try {
-      const mod = await import('file://' + entryFile.replace(/\\/g, '/'));
-      loaded.push({ name: entry.name, manifest, hooks: mod });
-      log(`[plugin] 已加载 ${entry.name} v${manifest.version ?? '?'}（${Object.keys(mod).filter((k) => k.startsWith('on')).join('/') || '无钩子'}）`);
+      const host = createPluginHost({ name: entry.name, dir: base, main: manifest.main ?? 'index.mjs', log });
+      const info = await host.ready;
+      loaded.push({ name: entry.name, manifest, host });
+      log(`[plugin] 已加载 ${entry.name} v${manifest.version ?? '?'}（${(info.hooks ?? []).join('/') || '无钩子'}，子进程隔离）`);
     } catch (error) {
       log(`[plugin] ${entry.name} 加载失败：${error?.message ?? error}`);
     }
@@ -1651,13 +1682,9 @@ async function loadPlugins() {
 async function runPluginHook(hookName, ctx) {
   let last = null;
   for (const p of pluginList) {
-    const fn = p.hooks?.[hookName];
-    if (typeof fn !== 'function') continue;
+    if (!p.host?.has?.(hookName)) continue;
     try {
-      const result = await Promise.race([
-        fn({ ...ctx, log: (...a) => log(`[plugin:${p.name}]`, ...a) }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('钩子超时')), 3000))
-      ]);
+      const result = await p.host.call(hookName, ctx);
       if (result) last = result;
     } catch (error) {
       log(`[plugin:${p.name}] ${hookName} 出错（忽略）：${error?.message ?? error}`);
@@ -1693,6 +1720,7 @@ function setMemoryOwner(owner) { activeMemoryOwner = owner || 'developer'; }
   }
   // 插件：启动时加载一次（失败不影响主流程）
   const pluginList = await loadPlugins();
+process.on('exit', () => { for (const p of pluginList) { try { p.host?.kill?.(); } catch {} } });
 
   // 语境引擎：谁在场、在聊什么、哪句还没回
   const ctxEngine = createContextEngine({ file: path.join(STATE_DIR, 'context.json'), log });
@@ -2672,6 +2700,16 @@ function setMemoryOwner(owner) { activeMemoryOwner = owner || 'developer'; }
           await sendFaceSegment(key, faceId);
           extraState.set(key, { ...state, lastFaceAt: Date.now() });
           log("[express] 补发小黄脸 id=" + faceId + "（心情 " + mood + "）");
+          return;
+        }
+      }
+      if (plan.kaomoji) {
+        const kao = pickKaomoji({ text, mood, exclude: state.recentKaomoji ?? [] });
+        if (kao) {
+          await sendToQQ(key, kao);
+          const recent = [...(state.recentKaomoji ?? []), kao].slice(-8);
+          extraState.set(key, { ...state, lastKaomojiAt: Date.now(), recentKaomoji: recent });
+          log("[express] 补发颜文字 " + kao + "（心情 " + mood + "）");
         }
       }
     } catch (error) {
@@ -2684,12 +2722,27 @@ function setMemoryOwner(owner) { activeMemoryOwner = owner || 'developer'; }
    * 三段各自兜底，任何一段抛错都只是少一段提示，不影响回复。
    */
   function composeInjection({ key, kind, text, cfg }) {
-    const out = { memory: '', context: '', mood: '' };
+    const out = { memory: '', context: '', mood: '', recall: '', emotion: '' };
+    // 权重先算好（记忆预算 / 情绪强度都要用；放在 try 外，避免某段失败后变量不可见）
+    let weights = { memory: 3, emotion: 3, auto: true };
+    let budget = memoryBudget(3);
     try {
+      let personaHintForWeights = '';
+      try { personaHintForWeights = currentRoleHint() || ''; } catch {}
+      let settingsTextForWeights = '';
+      try { settingsTextForWeights = (memory.list?.().settings ?? []).join('；'); } catch {}
+      weights = resolveWeights(cfg, { personaHint: personaHintForWeights, settingsText: settingsTextForWeights, text });
+      budget = memoryBudget(weights.memory);
+      out.weights = weights;
+    } catch {}
+    try {
+
       const blocks = memory.buildPromptBlocks(text, {
         key,
-        maxAlwaysChars: Number(cfg.role?.memory?.maxAlwaysChars ?? 500),
-        maxRelevantChars: Number(cfg.role?.memory?.maxRelevantChars ?? 500),
+        maxAlwaysChars: Math.min(2000, budget.always),
+        maxRelevantChars: Math.min(2000, budget.relevant),
+        hitLimit: memoryHitLimit(weights.memory),
+        strongLimit: Math.max(3, memoryHitLimit(weights.memory) + 2),
         cfg
       });
       out.memory = blocks.always + blocks.relevant;
@@ -2710,6 +2763,47 @@ function setMemoryOwner(owner) { activeMemoryOwner = owner || 'developer'; }
         out.mood = "【你现在的心情】" + mstate.label() + "（" + score.toFixed(1) + "）——语气跟着这个走，别硬装开心也别硬装生气。\n\n";
       }
     } catch {}
+    // 情绪强度：1=很克制 5=很外放；auto 时按心情/语气/人格卡自动算
+    try {
+      const e = cfg.role?.emotion ?? {};
+      let level = clampLevel(e.level ?? 3);
+      if (e.auto) {
+        let moodScore = 0;
+        try { moodScore = moodFor(key).get(); } catch {}
+        let hint = '';
+        try { hint = currentRoleHint() || ''; } catch {}
+        level = autoEmotionLevel({ base: level, moodScore, text, roleHint: hint });
+      }
+      out.emotion = emotionPrompt(level, weights.emotion);
+    } catch {}
+
+    // 隐藏区：只有命中关键词才被「检索」出来
+    try {
+      const hits = typeof memory.matchVault === 'function' ? memory.matchVault(text, 3) : [];
+      if (hits.length) {
+        out.memory += '\n【尘封的记忆】以前记下、但平时不提的事（只有确实相关且场合合适才自然提一句，别生硬复述）：\n'
+          + hits.map((v) => '- ' + v.text).join('\n') + '\n';
+      }
+    } catch {}
+
+    // 随机回想：偶尔主动提起一件旧事
+    try {
+      const mcfg = cfg.role?.memory ?? {};
+      const chance = Number(mcfg.recallChance ?? 0.08);
+      const cooldown = Number(mcfg.recallCooldownMs ?? 30 * 60 * 1000);
+      const now = Date.now();
+      if (chance > 0 && now - (recallAt.get(key) ?? 0) > cooldown && Math.random() < chance) {
+        const used = recentRecalls.get(key) ?? [];
+        const pick = typeof memory.pickRecall === 'function' ? memory.pickRecall({ exclude: used }) : null;
+        if (pick) {
+          recallAt.set(key, now);
+          used.push(pick.id || pick.text);
+          recentRecalls.set(key, used.slice(-12));
+          out.recall = '【忽然想起】' + pick.text + '\n（觉得自然就顺口提一句，不合适就忽略，不用解释为什么想起。）\n\n';
+        }
+      }
+    } catch {}
+
     return out;
   }
   // 发送一个收藏表情（按 emoji_id/url/md5 解析，发图片段）。
@@ -3465,7 +3559,9 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
   const queuedHintAt = new Map(); // key -> timestamp（冷却提示）
   const QUEUE_MAX = 50;
   const QUEUE_HINT_COOLDOWN_MS = 30_000;
-  const queueRetries = new Map(); // key -> 连续补投失败次数（用于退避/暂停恢复）
+  const queueRetries = new Map();
+  const recallAt = new Map();        // key -> 上次「忽然想起」的时间
+  const recentRecalls = new Map();   // key -> 最近用过的记忆 id（避免重复） // key -> 连续补投失败次数（用于退避/暂停恢复）
 
   // reset 竞态导致 ensureSession 抛「会话创建期间已重置」时，把消息放回队列稍后重试。
   // 已在队列中的相同文本不重复入队。
@@ -4355,6 +4451,28 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
           });
           return;
         }
+        // 自测用：预览空格分条结果（颜文字不该被拆散）。仅本机控制台，需 consoleToken。
+        if (req.method === 'GET' && url.pathname === '/api/debug/split') {
+          const qText = String(url.searchParams.get('text') ?? '');
+          const groups = splitByCjkSpaces(qText);
+          const bubbles = splitReplyIntoBubbles(qText);
+          sendJson({ ok: true, text: qText, groups, bubbles });
+          return;
+        }
+
+        // 自测用：预览这条消息会注入什么（记忆 / 情绪 / 忽然想起）。仅本机控制台，需 consoleToken。
+        if (req.method === 'GET' && url.pathname === '/api/debug/injection') {
+          const qText = String(url.searchParams.get('text') ?? '');
+          const qKey = String(url.searchParams.get('key') ?? 'group:0');
+          const qOwner = String(url.searchParams.get('owner') ?? 'developer');
+          try { setMemoryOwner(qOwner === 'developer' ? 'developer' : { user: qOwner }); } catch {}
+          const kind = qKey.startsWith('group:') ? 'group' : 'private';
+          let out = {};
+          try { out = composeInjection({ key: qKey, kind, text: qText, cfg: loadConfig() }); } catch (error) { out = { error: String(error?.message ?? error) }; }
+          sendJson({ ok: true, key: qKey, owner: qOwner, text: qText, ...out });
+          return;
+        }
+
         if (req.method === 'GET' && url.pathname === '/api/presets') {
           let presets = [];
           try {
@@ -8264,14 +8382,37 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
   // 按“有意的空格”拆分：真人不会主动用空格，因此 AI 回复里的空格视为分条信号。
   // 空格两侧只要有一侧是中文/中文标点，就按分条处理（包括中英文/数字之间的空格）。
   // 注意：该逻辑只用于一代 reserved 的自动转发文本；二代 reserved2 不走这里，二代必须显式用数组分条。
+  /** 把括号内的空格换成占位符，避免颜文字被按空格拆碎。 */
+  function protectKaomojiSpaces(src) {
+    let out = '';
+    let depth = 0;
+    for (const ch of String(src ?? '')) {
+      if ('([{（【<╭'.includes(ch)) depth += 1;
+      else if (')]}）】>╮'.includes(ch)) depth = Math.max(0, depth - 1);
+      if (/\s/.test(ch) && depth > 0) out += '\u0001';
+      else out += ch;
+    }
+    return out;
+  }
+
   function splitByCjkSpaces(src) {
-    const tokens = String(src ?? '').split(/\s+/).map((t) => t.trim()).filter(Boolean);
-    if (tokens.length <= 1) return tokens;
+    // 颜文字里到处都是空格（(工 ^ 工 🌸)），直接按空格切会把表情拆成好几条。
+    // 先把括号内的空格替换成占位符，切完再还原。
+    const protectedText = protectKaomojiSpaces(src);
+    const tokens = protectedText.split(/\s+/).map((t) => t.trim()).filter(Boolean);
+    if (tokens.length <= 1) return tokens.map((t) => t.replace(/\u0001/g, ' '));
+
+    const isSymbolOnly = (t) => /^[^\p{L}\p{N}]+$/u.test(t);
     const groups = [];
     let cur = tokens[0];
     for (let i = 1; i < tokens.length; i++) {
       const prevLast = [...cur].pop() || '';
       const currFirst = [...tokens[i]][0] || '';
+      // 纯符号/表情 token（^、✨、工 之间的连接符）不单独成条，粘在前后文里
+      if (isSymbolOnly(tokens[i]) || isSymbolOnly(cur)) {
+        cur = cur + ' ' + tokens[i];
+        continue;
+      }
       // 空格两侧只要有一侧是汉字，就视为分条信号。
       if (isCjkChar(prevLast) || isCjkChar(currFirst)) {
         groups.push(cur);
@@ -8281,7 +8422,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       }
     }
     if (cur) groups.push(cur);
-    return groups;
+    return groups.map((g) => g.replace(/\u0001/g, ' '));
   }
 
   /**
@@ -8304,7 +8445,11 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     }
     // 没有标点但有空格（人格卡示例就爱用空格断意群）时，也按空格分条
     if (parts.length <= 1) {
-      parts = flat.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+      // 颜文字里空格很多，先保护再按空格分，避免 (工 ^ 工 🌸) 被拆成碎片
+      parts = protectKaomojiSpaces(flat)
+        .split(/\s+/)
+        .map((s) => s.replace(/\u0001/g, ' ').trim())
+        .filter(Boolean);
     }
     if (parts.length <= 1) return [flat];
 
@@ -12291,6 +12436,8 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     // 任何一段失败都只降级为空串，绝不影响这条消息本身发不发得出去。
     const injection = composeInjection({ key, kind, text: plainContent || textContent, cfg, owner: activeMemoryOwner });
     const memoryBlock = injection.memory;
+    const recallBlock = injection.recall || '';
+    const emotionBlock = injection.emotion || '';
     const ctxBlock = injection.context;
     const moodBlock = injection.mood;
     lastInboundForMemory.set(key, plainContent || textContent);
@@ -12298,7 +12445,9 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       + sessionTokenLine
       + ctxBlock
       + moodBlock
+      + emotionBlock
       + memoryBlock
+      + recallBlock
       + (groupContextBlock ? `【最近群聊】（供参考，不需要逐条回应）\n${groupContextBlock}\n\n【当前消息】` : '')
       + (isOwner ? '【管理员】' : (isDeveloper ? '【开发者】' : ''))
       + (kind === 'group'
@@ -13022,12 +13171,13 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
                   } catch (error) {
                     log(`[express] 润色失败（用原文）：${error?.message ?? error}`);
                   }
-                  const bubbles = splitReplyIntoBubbles(plainToSend);
+                  const shape = normalizeReplyShape(cfg);
+                  const bubbles = splitReplyIntoBubbles(plainToSend, { maxBubbles: shape.maxBubbles, maxLen: shape.maxChars });
                   if (bubbles.length <= 1) {
                     await sendToQQ(key, plainToSend);
                   } else {
                     for (let bi = 0; bi < bubbles.length; bi += 1) {
-                      if (bi > 0) await new Promise((r) => setTimeout(r, 600 + Math.floor(Math.random() * 800)));
+                      if (bi > 0) await new Promise((r) => setTimeout(r, pickGapMs(shape)));
                       await sendToQQ(key, bubbles[bi]);
                     }
                   }
@@ -13188,12 +13338,12 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     // 统一按字符串比较：网关可能把 id 序列化成 number/string 混用，
     // 用 `===` 漏掉自己发的消息会进入正常处理（reserved2 下 AI 会回答自己 / chat 下可能回复循环）。
     if (String(event?.user_id ?? '') === String(event?.self_id ?? '')) return;
-    try { await handleIncoming('private', event.user_id, event, withProfile(cfg, event.user_id)); } catch (error) { log('处理私聊消息出错:', error?.message ?? error); }
+    try { await handleIncoming('private', event.user_id, event, withProfile(cfg, event.user_id, 'private')); } catch (error) { log('处理私聊消息出错:', error?.message ?? error); }
   });
   bot.onGroupMessage(async (event) => {
     if (String(event?.sender?.user_id ?? '') === String(event?.self_id ?? '')
       || String(event?.user_id ?? '') === String(event?.self_id ?? '')) return;
-    try { await handleIncoming('group', event.group_id, event, withProfile(cfg, event.sender?.user_id ?? event.user_id)); } catch (error) { log('处理群消息出错:', error?.message ?? error); if (error?.stack) log('[stack] ' + String(error.stack).split('\n').slice(0, 4).join(' | ')); }  });
+    try { await handleIncoming('group', event.group_id, event, withProfile(cfg, event.sender?.user_id ?? event.user_id, 'group')); } catch (error) { log('处理群消息出错:', error?.message ?? error); if (error?.stack) log('[stack] ' + String(error.stack).split('\n').slice(0, 4).join(' | ')); }  });
   bot.onNotice('notify', async (event) => {
     try { await handlePokeNotice(event); } catch (error) { log('处理拍一拍事件出错:', error?.message ?? error); }
   });

@@ -45,7 +45,8 @@ storeB.flush();
 
 const aText = JSON.stringify(storeA.list());
 const bText = JSON.stringify(storeB.list());
-const devText = JSON.stringify(storeDev.list());
+// 只比对事实/设定，隐藏区单独存在，不算「混入」
+const devText = JSON.stringify({ long: storeDev.list().long, short: storeDev.list().short, settings: storeDev.list().settings });
 
 if (aText.includes('团子')) ok('A 能读到自己的记忆');
 else bad('A 读不到自己的记忆');

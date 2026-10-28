@@ -27,6 +27,13 @@ const pick = [
   'test-guard.mjs',
   'test-envscan.mjs',
   'test-mdrender.mjs',
+  'test-vault.mjs',
+  'test-emotion.mjs',
+  'test-reply-shape.mjs',
+  'test-weights.mjs',
+  'test-plugin-verify.mjs',
+  'test-plugin-host.mjs',
+  'test-kaomoji.mjs',
   'test-dsh-detect.mjs'
 ].filter((f) => fs.existsSync(path.join(dir, f)));
 

@@ -1,4 +1,6 @@
 import { scanEnv } from './src/env-scan.js';
+import { buildUpdateResult } from './src/update-check.js';
+import { verifyPlugin, BUILTIN_PLUGINS } from './src/plugin-verify.js';
 
 // 小鲸鱼控制台：本地网页面板，统一管三个服务（SnowLuma / 桥接 / 语音识别）+ 守护。
 //
@@ -109,6 +111,7 @@ function writeDevMode(activated) {
 function devModeActivated() { return readDevMode().activated !== false; }
 
 let envCache = null;   // 环境扫描结果缓存（60 秒）
+let updateCache = null; // 检查更新缓存（10 分钟）
 
 /** 给普通账户看的版本：去掉本机绝对路径、内部地址。 */
 function redactEnv(data) {
@@ -693,6 +696,9 @@ const CFG_WHITELIST = {
   'role.expression.faceChance': (v) => {
     const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= 1 ? n : null;
   },
+  'role.expression.kaomojiChance': (v) => {
+    const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= 1 ? n : null;
+  },
   'role.expression.cooldownMs': (v) => {
     const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : null;
   },
@@ -703,6 +709,35 @@ const CFG_WHITELIST = {
     const n = Number(v); return Number.isInteger(n) && n >= 2 && n <= 50 ? n : null;
   },
   'role.memory.autoRemember': (v) => (typeof v === 'boolean' ? v : null),
+  'role.memory.recallChance': (v) => {
+    const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= 1 ? n : null;
+  },
+  'role.memory.recallCooldownMs': (v) => {
+    const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : null;
+  },
+  'role.emotion.level': (v) => {
+    const n = Math.round(Number(v)); return n >= 1 && n <= 5 ? n : null;
+  },
+  'role.emotion.auto': (v) => (typeof v === 'boolean' ? v : null),
+  'role.reply.bubblesMax': (v) => {
+    const n = Math.round(Number(v)); return n >= 1 && n <= 6 ? n : null;
+  },
+  'role.reply.bubbleMaxChars': (v) => {
+    const n = Math.round(Number(v)); return n >= 10 && n <= 300 ? n : null;
+  },
+  'role.reply.gapMinMs': (v) => {
+    const n = Math.round(Number(v)); return n >= 200 && n <= 15000 ? n : null;
+  },
+  'role.weights.auto': (v) => (typeof v === 'boolean' ? v : null),
+  'role.weights.memory.value': (v) => {
+    const n = Math.round(Number(v)); return n >= 1 && n <= 5 ? n : null;
+  },
+  'role.weights.emotion.value': (v) => {
+    const n = Math.round(Number(v)); return n >= 1 && n <= 5 ? n : null;
+  },
+  'role.reply.gapMaxMs': (v) => {
+    const n = Math.round(Number(v)); return n >= 200 && n <= 15000 ? n : null;
+  },
   'safety.enabled': (v) => (typeof v === 'boolean' ? v : null)
 };
 
@@ -758,6 +793,13 @@ function collectConfig() {
       developers: Array.isArray(cfg.role?.developers) ? cfg.role.developers : [],
       chime: cfg.role?.randomChimeProbability ?? 0,
       expression: cfg.role?.expression ?? {},
+      emotion: cfg.role?.emotion ?? {},
+      reply: cfg.role?.reply ?? {},
+      weights: {
+        auto: cfg.role?.weights?.auto !== false,
+        memory: { value: Number(cfg.role?.weights?.memory?.value ?? 3) },
+        emotion: { value: Number(cfg.role?.weights?.emotion?.value ?? 3) }
+      },
       memory: cfg.role?.memory ?? {}
     },
     safety: { enabled: cfg.safety?.enabled !== false },
@@ -819,6 +861,7 @@ function readMemory(file = MEM_PATH) {
       ...(mem.long?.keywords ?? []).map((k) => ({ ...k, tier: 'long' })),
       ...(mem.short?.keywords ?? []).map((k) => ({ ...k, tier: 'short' }))
     ],
+    vault: (mem.vault ?? []).map((v) => ({ id: v.id, text: v.text, keywords: v.keywords ?? [], hits: v.hits ?? 0, ts: v.ts })),
     summaries: Object.entries(mem.summaries ?? {}).map(([k, v]) => ({ key: k, text: v.text, turns: v.turns, updatedAt: v.updatedAt }))
   };
 }
@@ -1192,7 +1235,8 @@ const server = http.createServer(async (req, res) => {
     const sess = currentSession(req);
     // 外观清单允许未登录读取（登录页也要显示图标）
     const publicUi = url.pathname === '/api/ui' && req.method === 'GET';
-    if (!sess && !launchOk && !publicUi) return send(res, 401, JSON.stringify({ ok: false, msg: '需要登录' }));
+    const publicVersion = url.pathname === '/api/version' && req.method === 'GET';
+    if (!sess && !launchOk && !publicUi && !publicVersion) return send(res, 401, JSON.stringify({ ok: false, msg: '需要登录' }));
     // 写操作（以及账户管理）只认开发者账户；普通账户只能看
     // 普通账户连"读"都不行：这些是开发者的私有配置与全局记忆
     const OWNER_ONLY_READ = new Set(['/api/config']);
@@ -1337,6 +1381,18 @@ const server = http.createServer(async (req, res) => {
 
 
     // ── 插件管理 ─────────────────────────────────────────────────────────
+    // 验证结果落盘：state/plugins-verified.json
+    const pluginVerifiedPath = path.join(STATE, 'plugins-verified.json');
+    const readPluginVerified = () => {
+      try { return JSON.parse(fs.readFileSync(pluginVerifiedPath, 'utf8')); } catch { return {}; }
+    };
+    const writePluginVerified = (data) => {
+      try {
+        fs.mkdirSync(STATE, { recursive: true });
+        fs.writeFileSync(pluginVerifiedPath, JSON.stringify(data, null, 2), 'utf8');
+      } catch {}
+    };
+
     if (url.pathname === '/api/plugins/list' && req.method === 'GET') {
       const sess = currentSession(req);
       if (!sess) return send(res, 401, JSON.stringify({ ok: false, msg: '需要登录' }));
@@ -1355,12 +1411,35 @@ const server = http.createServer(async (req, res) => {
               description: m.description || '',
               enabled: m.enabled !== false,
               risk: m.risk || '',
-              hooks: m.hooks || []
+              hooks: m.hooks || [],
+              builtin: BUILTIN_PLUGINS.includes(e.name),
+              verified: readPluginVerified()[e.name] ?? null
             });
           } catch {}
         }
       } catch {}
       return send(res, 200, JSON.stringify({ ok: true, list }));
+    }
+
+    if (url.pathname === '/api/plugins/verify' && req.method === 'POST') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可验证' }));
+      const body = await readBody(req);
+      const name = String(body.name ?? '').replace(/[^\w-]/g, '');
+      const dir = path.join(ROOT, 'plugins', name);
+      if (!name || !fs.existsSync(path.join(dir, 'manifest.json'))) {
+        return send(res, 404, JSON.stringify({ ok: false, msg: '没有这个插件' }));
+      }
+      try {
+        const result = await verifyPlugin(dir);
+        const all = readPluginVerified();
+        all[name] = { ok: result.ok, at: Date.now(), permissions: result.permissions ?? [], problems: result.problems ?? [] };
+        writePluginVerified(all);
+        log('插件验证:', name, result.ok ? '通过' : '未通过');
+        return send(res, 200, JSON.stringify({ ok: result.ok, ...all[name] }));
+      } catch (error) {
+        return send(res, 500, JSON.stringify({ ok: false, msg: '验证失败：' + error.message }));
+      }
     }
 
     if (url.pathname === '/api/plugins/toggle' && req.method === 'POST') {
@@ -1372,7 +1451,14 @@ const server = http.createServer(async (req, res) => {
       if (!name || !fs.existsSync(mf)) return send(res, 404, JSON.stringify({ ok: false, msg: '没有这个插件' }));
       try {
         const m = JSON.parse(fs.readFileSync(mf, 'utf8'));
-        m.enabled = body.enabled !== false;
+        const willEnable = body.enabled !== false;
+        if (willEnable && !BUILTIN_PLUGINS.includes(name)) {
+          const rec = readPluginVerified()[name];
+          if (!rec || !rec.ok) {
+            return send(res, 400, JSON.stringify({ ok: false, msg: '这个插件还没通过验证，请先点「验证」' }));
+          }
+        }
+        m.enabled = willEnable;
         fs.writeFileSync(mf, JSON.stringify(m, null, 2), 'utf8');
         log('插件' + (m.enabled ? '启用' : '停用') + ':', name);
         return send(res, 200, JSON.stringify({ ok: true, enabled: m.enabled, msg: m.enabled ? '已启用，重启桥接后生效' : '已停用' }));
@@ -1516,7 +1602,30 @@ const server = http.createServer(async (req, res) => {
         if (typeof b.expressionOn === 'boolean') patch.behavior.expressionOn = b.expressionOn;
         if (Number.isFinite(Number(b.stickerChance))) patch.behavior.stickerChance = Math.max(0, Math.min(1, Number(b.stickerChance)));
         if (Number.isFinite(Number(b.faceChance))) patch.behavior.faceChance = Math.max(0, Math.min(1, Number(b.faceChance)));
+    if (Number.isFinite(Number(b.kaomojiChance))) patch.behavior.kaomojiChance = Math.max(0, Math.min(1, Number(b.kaomojiChance)));
         if (typeof b.voiceReply === 'boolean') patch.behavior.voiceReply = b.voiceReply;
+        if (b.reply && typeof b.reply === 'object') {
+          const num = (v, min, max, dflt) => {
+            const n = Math.round(Number(v));
+            return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : dflt;
+          };
+          patch.behavior.reply = {
+            bubblesMax: num(b.reply.bubblesMax, 1, 6, 5),
+            bubbleMaxChars: num(b.reply.bubbleMaxChars, 10, 300, 40),
+            gapMinMs: num(b.reply.gapMinMs, 200, 15000, 600),
+            gapMaxMs: num(b.reply.gapMaxMs, 200, 15000, 1400)
+          };
+          if (patch.behavior.reply.gapMaxMs < patch.behavior.reply.gapMinMs) {
+            patch.behavior.reply.gapMaxMs = patch.behavior.reply.gapMinMs;
+          }
+        }
+        if (b.emotion && typeof b.emotion === 'object') {
+          const lv = Math.round(Number(b.emotion.level));
+          patch.behavior.emotion = {
+            level: lv >= 1 && lv <= 5 ? lv : 3,
+            auto: b.emotion.auto !== false
+          };
+        }
       }
       if (typeof body.model === 'string') patch.model = PRESET_MODELS.some((m) => m.id === body.model) ? body.model : '';
       if (typeof body.personaName === 'string') patch.personaName = body.personaName.slice(0, 24);
@@ -1611,6 +1720,45 @@ const server = http.createServer(async (req, res) => {
       const synced = result.ok ? syncPersonaSettings(body.name, undefined) : null;
       return send(res, 200, JSON.stringify({ ...result, sync: synced }));
     }
+    // ── 版本与检查更新 ───────────────────────────────────────────────
+    if (url.pathname === '/api/version' && req.method === 'GET') {
+      const pkg = readJson(path.join(ROOT, 'package.json'), {});
+      return send(res, 200, JSON.stringify({
+        ok: true,
+        version: String(pkg.version ?? '0.0.0'),
+        node: process.version,
+        platform: process.platform
+      }));
+    }
+    if (url.pathname === '/api/update/check' && req.method === 'GET') {
+      // 任何登录用户都能查（只读，不涉及更新动作）
+      const pkg = readJson(path.join(ROOT, 'package.json'), {});
+      const current = String(pkg.version ?? '0.0.0');
+      const force = url.searchParams.get('force') === '1';
+      const now = Date.now();
+      if (!force && updateCache && now - updateCache.at < 10 * 60 * 1000) {
+        return send(res, 200, JSON.stringify(updateCache.data));
+      }
+      try {
+        const res2 = await fetch('https://api.github.com/repos/WADA115/whale-bot/releases/latest', {
+          headers: { 'user-agent': 'whale-bot-update-check', accept: 'application/vnd.github+json' },
+          signal: AbortSignal.timeout(8000)
+        });
+        if (!res2.ok) throw new Error('GitHub 返回 ' + res2.status);
+        const json = await res2.json();
+        const data = buildUpdateResult(current, json);
+        updateCache = { at: now, data };
+        return send(res, 200, JSON.stringify(data));
+      } catch (error) {
+        return send(res, 200, JSON.stringify({
+          ok: false,
+          current,
+          latest: '',
+          updateAvailable: false,
+          error: '连不上 GitHub：' + String(error?.message ?? error).slice(0, 80)
+        }));
+      }
+    }
     if (url.pathname === '/api/memory' && req.method === 'GET') {
       // owner 只认会话：普通账户只能读自己的文件
       return send(res, 200, JSON.stringify(readMemory(memoryPathFor(currentSession(req)))));
@@ -1620,6 +1768,55 @@ const server = http.createServer(async (req, res) => {
       // 忽略 body 里任何用户名字段，只用会话身份定位文件，防止 A 写 B
       return send(res, 200, JSON.stringify(memoryAction(body.op, body, memoryPathFor(currentSession(req)))));
     }
+    // ── 隐藏区：平时不注入，命中关键词才被检索 ───────────────────────────
+    // 注意：这里必须直接读写 memory.json 的原始结构（long/short/settings/summaries），
+    // 不能用 readMemory() 的展示结构写回，否则会把记忆文件写坏。
+    if (url.pathname === '/api/memory/vault' && req.method === 'GET') {
+      const file = memoryPathFor(currentSession(req));
+      let raw = null;
+      try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+      const list = raw && Array.isArray(raw.vault) ? raw.vault : [];
+      return send(res, 200, JSON.stringify({ ok: true, list }));
+    }
+    if (url.pathname === '/api/memory/vault' && req.method === 'POST') {
+      const body = await readBody(req);
+      const file = memoryPathFor(currentSession(req));
+      let raw = null;
+      try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) raw = {};
+      if (!raw.long || Array.isArray(raw.long) || !Array.isArray(raw.long.facts)) {
+        return send(res, 500, JSON.stringify({ ok: false, msg: '记忆文件结构异常，请先在面板里修复或还原备份' }));
+      }
+      const vault = Array.isArray(raw.vault) ? raw.vault : [];
+      const op = String(body.op ?? 'add');
+      if (op === 'add') {
+        const text = String(body.text ?? '').trim().slice(0, 300);
+        if (!text) return send(res, 400, JSON.stringify({ ok: false, msg: '内容不能为空' }));
+        if (vault.some((v) => String(v.text ?? '').trim() === text)) {
+          return send(res, 200, JSON.stringify({ ok: true, list: vault, msg: '已存在' }));
+        }
+        const keywords = String(body.keywords ?? '')
+          .split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean).slice(0, 8);
+        vault.push({
+          id: 'v' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+          ts: Date.now(), text, keywords, tags: [], hits: 0, lastHitAt: 0
+        });
+        if (vault.length > 200) vault.splice(0, vault.length - 200);
+      } else if (op === 'delete') {
+        const id = String(body.id ?? '');
+        const i = vault.findIndex((v) => String(v.id) === id);
+        if (i >= 0) vault.splice(i, 1);
+      } else {
+        return send(res, 400, JSON.stringify({ ok: false, msg: '未知操作' }));
+      }
+      raw.vault = vault;
+      raw.version = raw.version || 2;
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(raw, null, 2), 'utf8');
+      log('隐藏区操作:', op, '共', vault.length, '条');
+      return send(res, 200, JSON.stringify({ ok: true, list: vault, msg: op === 'add' ? '已加入隐藏区' : '已删除' }));
+    }
+
     if (url.pathname === '/api/stats') {
       const sess = currentSession(req);
       if (sess && sess.role !== 'developer') {

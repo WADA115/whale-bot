@@ -72,13 +72,17 @@ function emptyState() {
     long: { facts: [], keywords: [], settings: [] },
     short: { facts: [], keywords: [] },
     summaries: {},
+    vault: [],   // 隐藏区：平时不注入，命中关键词才被检索
   };
 }
 
 /** 旧版（v1: {facts, keywords}）迁移到 v2 的短期层。 */
 function migrate(raw) {
   if (!raw || typeof raw !== 'object') return emptyState();
-  if (raw.version === 2 && raw.long && raw.short) return raw;
+  if (raw.version === 2 && raw.long && raw.short) {
+    if (!Array.isArray(raw.vault)) raw.vault = [];
+    return raw;
+  }
   const state = emptyState();
   const facts = Array.isArray(raw.facts) ? raw.facts : [];
   const keywords = Array.isArray(raw.keywords) ? raw.keywords : [];
@@ -394,7 +398,7 @@ export function createMemoryCore({ file, log = () => {} } = {}) {
    *   always  —— 设定 + 长期关键词 + 高价值长期事实（始终贴）
    *   relevant—— 与当前这句话相关的长期/短期条目 + 命中关键词
    */
-  function buildPromptBlocks(query, { key = '', maxAlwaysChars = 500, maxRelevantChars = 500, cfg = {} } = {}) {
+  function buildPromptBlocks(query, { key = '', maxAlwaysChars = 500, maxRelevantChars = 500, hitLimit = 6, strongLimit = 10, cfg = {} } = {}) {
     const linesAlways = [];
     if (state.long.settings.length) {
       linesAlways.push(`【你的设定（始终遵守）】`);
@@ -406,7 +410,7 @@ export function createMemoryCore({ file, log = () => {} } = {}) {
     }
     const strongFacts = state.long.facts
       .filter((f) => (f.weight ?? 1) >= 2 || (f.tags ?? []).includes('important'))
-      .slice(-10);
+      .slice(-Math.max(1, Math.min(20, strongLimit)));
     if (strongFacts.length) {
       linesAlways.push(`【长期记忆】`);
       for (const f of strongFacts) linesAlways.push(`- ${f.text}`);
@@ -415,7 +419,7 @@ export function createMemoryCore({ file, log = () => {} } = {}) {
     if (always.length > maxAlwaysChars) always = `${always.slice(0, maxAlwaysChars)}\n\n`;
 
     const linesRel = [];
-    const hits = search(query, { limit: 6, key, markAccess: true });
+    const hits = search(query, { limit: Math.max(1, Math.min(12, hitLimit)), key, markAccess: true });
     if (hits.length) {
       linesRel.push(`【相关记忆】`);
       for (const h of hits) linesRel.push(`- ${h.fact.text}${h.tier === 'long' ? '' : ''}`);
@@ -430,10 +434,76 @@ export function createMemoryCore({ file, log = () => {} } = {}) {
     return { always, relevant, hits, keywords: kws };
   }
 
+  // ── 隐藏区：平时不注入，命中关键词才被检索出来 ──────────────────────
+  function addVault(text, { keywords = [], tags = [] } = {}) {
+    const t = normText(text).slice(0, 300);
+    if (!t) return null;
+    if (!Array.isArray(state.vault)) state.vault = [];
+    if (state.vault.some((v) => normText(v.text) === t)) return null;
+    const item = {
+      id: newId('v'),
+      ts: Date.now(),
+      text: t,
+      keywords: (Array.isArray(keywords) ? keywords : []).map((k) => String(k).trim()).filter(Boolean).slice(0, 8),
+      tags: (Array.isArray(tags) ? tags : []).map(String).slice(0, 6),
+      hits: 0,
+      lastHitAt: 0,
+    };
+    state.vault.push(item);
+    if (state.vault.length > 200) state.vault.splice(0, state.vault.length - 200);
+    scheduleSave();
+    return item;
+  }
+
+  function listVault() {
+    return (state.vault ?? []).map((v) => ({ ...v }));
+  }
+
+  function removeVault(id) {
+    const before = (state.vault ?? []).length;
+    state.vault = (state.vault ?? []).filter((v) => v.id !== id);
+    if (state.vault.length !== before) { scheduleSave(); return true; }
+    return false;
+  }
+
+  /** 关键词命中：返回命中的隐藏区条目（命中的关键词越多越靠前）。 */
+  function matchVault(text, limit = 3) {
+    const t = String(text ?? '');
+    if (!t || !Array.isArray(state.vault) || !state.vault.length) return [];
+    const hits = [];
+    for (const v of state.vault) {
+      let score = 0;
+      for (const kw of v.keywords ?? []) if (kw && t.includes(kw)) score += 1;
+      if (score > 0) hits.push({ item: v, score });
+    }
+    if (!hits.length) return [];
+    hits.sort((a, b) => b.score - a.score);
+    const picked = hits.slice(0, limit).map((h) => h.item);
+    for (const it of picked) { it.hits = (it.hits ?? 0) + 1; it.lastHitAt = Date.now(); }
+    scheduleSave();
+    return picked;
+  }
+
+  /** 随机挑一条旧事（长期事实 + 隐藏区），用于「忽然想起」式的主动回忆。 */
+  function pickRecall({ exclude = [] } = {}) {
+    const vault = Array.isArray(state.vault) ? state.vault : [];
+    const pool = [
+      ...state.long.facts.map((f) => ({ id: f.id, text: f.text, from: 'long' })),
+      ...vault.map((v) => ({ id: v.id, text: v.text, from: 'vault' })),
+    ].filter((x) => x && x.text);
+    if (!pool.length) return null;
+    const skip = new Set((exclude ?? []).map((x) => String(x)));
+    const cand = pool.filter((x) => !skip.has(String(x.id ?? x.text)));
+    if (!cand.length) return null;
+    const pick = cand[Math.floor(Math.random() * cand.length)];
+    return { id: pick.id ?? '', text: pick.text, from: pick.from };
+  }
+
   load();
 
   return {
     addFact, addKeyword, addSetting,
+    addVault, listVault, removeVault, matchVault, pickRecall,
     search, similarFacts, matchKeywords,
     mergeFacts, dedupeLocal, promoteFact, promoteKeyword, autoPromote, pruneShortTerm,
     setSummary, getSummary,
@@ -446,6 +516,7 @@ export function createMemoryCore({ file, log = () => {} } = {}) {
       shortKeywords: state.short.keywords.length,
       settings: state.long.settings.length,
       summaries: Object.keys(state.summaries).length,
+      vault: (state.vault ?? []).length,
     }),
     snapshot: () => JSON.parse(JSON.stringify(state)),
     list: () => ({
@@ -453,6 +524,7 @@ export function createMemoryCore({ file, log = () => {} } = {}) {
       long: state.long.facts.map((f) => ({ text: f.text, weight: f.weight, access: f.accessCount })),
       short: state.short.facts.map((f) => ({ text: f.text, access: f.accessCount, ts: f.ts })),
       keywords: [...state.long.keywords.map((k) => ({ ...k, tier: 'long' })), ...state.short.keywords.map((k) => ({ ...k, tier: 'short' }))],
+      vault: (state.vault ?? []).map((v) => ({ id: v.id, text: v.text, keywords: v.keywords, hits: v.hits ?? 0 })),
       summaries: Object.fromEntries(Object.entries(state.summaries).map(([k, v]) => [k, v.text.slice(0, 80)])),
     }),
   };

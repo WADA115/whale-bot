@@ -56,6 +56,22 @@ Then open the panel, log in with the developer key (auto-generated at `state/dev
 
 ---
 
+## Console
+
+![Console overview](docs/screenshots/panel.png)
+
+| Settings | Memory |
+| --- | --- |
+| ![Settings](docs/screenshots/settings.png) | ![Memory](docs/screenshots/memory.png) |
+
+| Plugins | Login |
+| --- | --- |
+| ![Plugins](docs/screenshots/plugins.png) | ![Login](docs/screenshots/login.png) |
+
+Overview (services / metrics / logs) · Settings (model, persona, behavior, voice, emotion, weights, reply shape, trusted list, accounts, developer mode) · Memory (five layers + hidden vault) · Plugins (verification status) · Appearance (6 original whale mascots, blinking) · Environment check (read-only) · Help · Changelog
+
+---
+
 ## Configuration (excerpt)
 
 ```json

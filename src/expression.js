@@ -168,12 +168,15 @@ export function worthSticker(text) {
  * 决定这条回复要不要额外发点东西。
  * 返回 { sticker: boolean, face: boolean, draw: boolean, reason }
  */
+import { worthKaomoji } from './kaomoji.js';
+
 export function decideExtras({ text, mood = 0, cfg = {}, rng = Math.random, recent = {} } = {}) {
   const c = cfg.role?.expression ?? {};
-  if (c.enabled === false) return { sticker: false, face: false, draw: false, reason: 'disabled' };
+  if (c.enabled === false) return { sticker: false, face: false, kaomoji: false, draw: false, reason: 'disabled' };
   const stickerChance = Number(c.stickerChance ?? 0.22);
   const faceChance = Number(c.faceChance ?? 0.12);
   const drawChance = Number(c.drawChance ?? 0.02);
+  const kaomojiChance = Number(c.kaomojiChance ?? 0.12);
   const now = Date.now();
   const cooldown = Number(c.cooldownMs ?? 90 * 1000);
 
@@ -191,7 +194,14 @@ export function decideExtras({ text, mood = 0, cfg = {}, rng = Math.random, rece
     && now - (recent.lastDrawAt ?? 0) > 10 * 60 * 1000
     && rng() < 0.35 + drawChance;
 
-  return { sticker, face, draw, reason: `${mood.toFixed?.(1) ?? mood}` };
+  // 颜文字：纯文本、必达；和表情包/小黄脸三选一，短句才补。
+  // 单独用更长的冷却（5 分钟），避免每条都甩；回复里已经有颜文字就不再补。
+  const alreadyHasKaomoji = /[（(][^（()）]{0,18}[)）]/.test(String(text ?? ''));
+  const kaomoji = !sticker && !face && !alreadyHasKaomoji && worthKaomoji(text)
+    && now - (recent.lastKaomojiAt ?? 0) > 5 * 60 * 1000
+    && rng() < kaomojiChance + (Math.abs(mood) >= 3 ? 0.04 : 0);
+
+  return { sticker, face, kaomoji, draw, reason: `${mood.toFixed?.(1) ?? mood}` };
 }
 
 // ── 情感 → 小黄脸 ────────────────────────────────────────────────────────
