@@ -101,12 +101,13 @@ QQ 消息 → SnowLuma（网关）→ 桥接 → DeepSeek → 回复
 2. `npm install`
 3. 复制 `config.example.json` → `config.json`，填 `ownerQQ` / `allow.*` / `snowluma.homeDir` / `dsh.baseUrl`
 4. 准备 `tools/`（Windows 版 ffmpeg、ASR 模型；没有也能跑，只是少几种能力）
-5. 启动（Windows 直接双击 `静默启动.vbs`）：
+5. 语音识别单独起：`start-asr.bat`（自动找 Python 与 onnx 依赖；加 `/silent` 跑后台），或直接让 `守护.bat` 拉起
+6. 启动（Windows 直接双击 `静默启动.vbs`）：
    ```bash
    node app.js          # 面板 3200
    node src/bridge.js   # 桥接 3100
    ```
-6. 打开 `http://127.0.0.1:3200` → 填开发者密钥 → 到 SnowLuma 里登录 QQ
+7. 打开 `http://127.0.0.1:3200` → 填开发者密钥 → 到 SnowLuma 里登录 QQ
 
 第一次启动会自动生成密钥，存在 `state/dev-key.txt`，控制台也打了一行。
 

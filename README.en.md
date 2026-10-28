@@ -27,7 +27,10 @@ Not an official product. It speaks through **your own QQ account**, and all data
 - **Memory isolation** — a user's store can never read another user's, and normal users cannot see the developer's memory.
 - **Auto memory** — a local heuristic decides whether a message is worth remembering (identity/preference → long-term, recent facts → short-term). No model call, no tokens, never touches persona cards or settings.
 - **Persona cards** — markdown cards in `roles/`, editable in the panel; saving syncs them into the memory "settings" layer.
-- **Plugins** — `plugins/<name>/` with `manifest.json` + `index.mjs`, hooks `onInbound / onReply / onMemory`. A learning plugin (games / memes / slang, stored in `state/learning.json`) ships disabled by default.
+- **Plugins** — `plugins/<name>/` with `manifest.json` + `index.mjs`, hooks `onInbound / onReply / onMemory`. New plugins must pass manifest validation, static scanning and a sandboxed dry run before they can be enabled; at runtime each plugin runs in its own child process (3 s per hook), so a crash or infinite loop only takes down that plugin. A learning plugin ships disabled by default.
+- **Memory / emotion weights** — 1–5 each, auto-tuned from the persona card, settings and context; memory weight scales how much context is injected (relevant items only, never the whole store). Manual overrides are developer-only.
+- **Kaomoji** — after the text, occasionally send a kaomoji (34 built in, chosen by keywords + mood); same cooldown family as stickers/faces, 5-minute separate cooldown, skipped when the reply already contains one.
+- **Speech-to-text that self-heals** — `start-asr.bat` auto-detects Python and the onnx runtime; the watchdog probes both the bridge (3100) and ASR (3199, port + `/health`) and restarts whichever is down with per-service backoff.
 - **Panel** — overview, settings, memory (5 tabs), plugins, appearance (6 original whale mascots with blink animation), environment check (read-only), help, changelog.
 - **Safety** — outbound content filter, tool guard for privileged actions, rate limits, IP redaction in logs.
 
@@ -48,6 +51,7 @@ Not an official product. It speaks through **your own QQ account**, and all data
 ```bash
 npm install
 cp config.example.json config.json     # fill ownerQQ / allow.* / snowluma.homeDir / dsh.baseUrl
+start-asr.bat /silent                  # ASR → :3199 (auto-detects Python + onnx deps)
 node app.js                            # panel  → http://127.0.0.1:3200
 node src/bridge.js                     # bridge → :3100
 ```
