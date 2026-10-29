@@ -31,8 +31,20 @@ import { createMemoryCore, createMemoryStore } from './memory-core.js';
 import { judge as judgeAutoMemory } from './auto-memory.js';
 import { BUILTIN_PLUGINS } from './plugin-verify.js';
 import { createPluginHost } from './plugin-host.js';
+import { loadPlugins as loadPluginsFromDir, runPluginHook as runPluginHookOn } from './plugins/runtime.js';
+import { createPromptQueue } from './dsh/queue.js';
+import { appendWakeSnapshot, buildDeliveryContent, deliveryErrorText } from './dsh/deliver.js';
 import { clampLevel, autoEmotionLevel, emotionPrompt } from './emotion.js';
 import { pickKaomoji } from './kaomoji.js';
+import { readInfluence, emotionWeightWithGrowth, memoryBudgetWithGrowth, chanceWithGrowth } from './growth-influence.js';
+import { reviewNarrative } from './narrative-guard.js';
+import { guardIncomingText, buildPersonaAnchor } from './persona-guard.js';
+import { buildClosedAgentPrompt } from './prompt/assemble.js';
+import { SILENT_MARKER, SPACE_SPLIT_HINT, DIRECTION_HINT, buildBatchPromptText, buildProbePromptText, buildActiveExitPromptText, buildProactivePromptText } from './prompt/context.js';
+import { selfIdentityText, buildWakeReasonSuffix } from './prompt/wake.js';
+import { renderWakePromptV2 } from './prompt/wake-render.js';
+import { sanitizeMediaSummary, extractMediaFromSegments, isDirectedAtAi, isDirectAddress, isMustReplyText, isSelfMessage } from './message/parse.js';
+import { singleLineForQQ, splitLongSegment, splitByCjkSpaces, splitReplyIntoBubbles, planSocialTimeline } from './send/pipeline.js';
 import { normalizeReplyShape, pickGapMs } from './reply-shape.js';
 import { resolveWeights, memoryBudget, memoryHitLimit } from './weights.js';
 // 语境引擎：追踪每个会话的在场人、当前话题、还没回应的问句
@@ -598,7 +610,6 @@ function presetStatus(name) {
 // 宁可误拦，不可泄露。
 // 社交模式“静默标记”：模型输出该标记时，桥接不把内容发到 QQ。
 // 用于让 AI 在“不想接话/潜水”时有合法沉默出口，而不是写“（内心戏）”被当成消息发出去。
-const SILENT_MARKER = '[SILENT]';
 function isSilentMarker(text) {
   return /^\s*\[SILENT\]\s*$/i.test(String(text ?? '').trim());
 }
@@ -612,9 +623,7 @@ function isSendToolName(name) {
 
 // 分句规则提示：真人聊天不会主动用空格，因此空格被桥接当作“分条信号”。
 // 中英文/数字之间的空格同样会分条，所以不想分条就不要加空格。
-const SPACE_SPLIT_HINT = '想分多条消息时用空格分隔；不想分条就不要加空格，用标点连接。注意：中英文/数字之间的空格也会被当作分条信号。';
 // 群聊指向性提示：引用/回复段表示“这句话是在对被引用的人说”，避免 AI 把群友之间的对话误当成指向自己。
-const DIRECTION_HINT = '注意：消息里的 [引用 某人：...] 表示这句话是在回应被引用的人；引用的是你的消息才是在找你，引用别人时别默认是在找你。';
 
 // 已知的二代 agent token 集合：日志/活动/出站文本统一脱敏，防止令牌被模型泄露到 QQ。
 const KNOWN_AGENT_TOKENS = new Set();
@@ -838,6 +847,10 @@ function loadConfig() {
       learnerPreset: 'qq-chat',
       workspaceTitle: 'QQ 黑话学习',
       autoResearch: true,
+      askTrigger: true,
+      askCooldownMs: 10 * 60 * 1000,
+      confidenceMin: 0.5,
+      ttlDays: 90,
       ...(file.slang ?? {})
     },
     social: {
@@ -1446,70 +1459,6 @@ async function segmentsToText(segments, options = {}) {
  * 媒体摘要（QQ 表情的 `summary`）会进入模型上下文、也会被拼进「[表情:…]」这类单行标注。
  * 压掉换行/控制字符并限长：否则一条群消息可以用摘要里的换行伪造出新的提示词段落。
  */
-function sanitizeMediaSummary(value, max = 60) {
-  const s = String(value ?? '').replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').trim();
-  return s ? truncateText(s, max) : '';
-}
-
-// 从 OneBot 消息段中提取图片/表情元数据（不下载字节，仅记录定位信息）。
-// 供一代自动内联、二代按需工具、控制台/日志使用。
-//
-// 字段必须尽量保留：SnowLuma 收到的 QQ 表情包（收藏/市场表情）是 **image 段 +
-// emoji_id/emoji_package_id/key/url**（实测：sub_type 可能是 0，靠 emoji_id 区分），
-// 部分网关实现则用 mface 段。以前只留 file/url/subType/summary，emoji 字段被丢掉，
-// 一旦 get_image 取不到（市场表情不在网关缓存里），就再也没有其它可用的兜底地址。
-function extractMediaFromSegments(segments) {
-  const media = [];
-  for (const seg of segments ?? []) {
-    if (!seg || typeof seg !== 'object') continue;
-    const d = seg.data ?? {};
-    const emojiFields = {
-      emojiId: String(d.emoji_id ?? d.emojiId ?? ''),
-      emojiPackageId: String(d.emoji_package_id ?? d.emojiPackageId ?? ''),
-      emojiKey: String(d.key ?? '')
-    };
-    if (seg.type === 'image') {
-      media.push({
-        kind: 'image',
-        file: String(d.file ?? ''),
-        url: String(d.url ?? ''),
-        // 线上段落字段是 snake_case 的 `sub_type`（SnowLuma 运行时源码里就这么发）；
-        // 而 SDK 的类型描述的是**内部元素**、拼作 `subType`。两个都读，别只认一个
-        // —— 只读 camelCase 的话这里会永远是空串，而且不会有任何报错。
-        subType: (d.sub_type ?? d.subType) != null ? String(d.sub_type ?? d.subType) : '',
-        summary: sanitizeMediaSummary(d.summary),
-        ...emojiFields
-      });
-    } else if (seg.type === 'mface') {
-      // 市场表情（mface）：没有 image 段可用，emoji_id/url 是唯一来源。
-      media.push({
-        kind: 'sticker',
-        file: String(d.file ?? ''),
-        url: String(d.url ?? ''),
-        subType: '1',
-        summary: sanitizeMediaSummary(d.summary),
-        ...emojiFields
-      });
-    } else if (seg.type === 'face') {
-      media.push({
-        kind: 'face',
-        faceId: String(d.id ?? ''),
-        url: String(d.url ?? ''),
-        summary: sanitizeMediaSummary(d.summary)
-      });
-    } else if (seg.type === 'video') {
-      // 本地新增：视频当"几帧画面 + 音轨转写"处理（模型只吃图片）
-      media.push({
-        kind: 'video',
-        file: String(d.file ?? ''),
-        url: String(d.url ?? ''),
-        summary: sanitizeMediaSummary(d.summary)
-      });
-    }
-  }
-  return media;
-}
-
 function allowed(kind, id, cfg) {
   // OneBot 事件里的 id 可能是数字也可能是字符串（int64 序列化差异），统一转字符串比较。
   // 配置字段兼容单数（group/private）与复数（groups/privates）两种写法。
@@ -1557,6 +1506,7 @@ async function main() {
     log(`⚠️ 黑话库加载失败，已暂停写入以免覆盖磁盘数据（修好后重启即可恢复）：${error?.message ?? error}`);
   }
   const slangWindows = new Map();       // key -> [{sender,text,time}]：待学习消息窗口
+  const slangAskCooldowns = new Map();  // key -> 上次“问梗”学习时间
   const slangExtractionCooldowns = new Map(); // key -> timestamp
   const slangSubmitTimes = new Map();   // key -> [timestamp]：AI 提交黑话候选限频（内存态）
   const feedbackTimes = new Map();      // key -> [timestamp]：AI 反馈限频（内存态）
@@ -1643,54 +1593,12 @@ async function main() {
 // 约定 ctx = { key, sender, text, reply, cfg, log }
 // 每个钩子独立 try/catch + 3 秒超时，插件炸了不影响主流程。
 async function loadPlugins() {
-  const dir = path.join(ROOT, 'plugins');
-  const loaded = [];
-  let entries = [];
-  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return loaded; }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const base = path.join(dir, entry.name);
-    const manifest = (() => { try { return JSON.parse(fs.readFileSync(path.join(base, 'manifest.json'), 'utf8')); } catch { return null; } })();
-    if (!manifest || manifest.enabled === false) continue;
-    // 非内置插件必须通过验证（面板里点「验证」后写入 state/plugins-verified.json）
-    if (!BUILTIN_PLUGINS.includes(entry.name)) {
-      let verified = null;
-      try {
-        const all = JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'plugins-verified.json'), 'utf8'));
-        verified = all[entry.name];
-      } catch {}
-      if (!verified || !verified.ok) {
-        log(`[plugin] 跳过未验证插件：${entry.name}（先在面板里验证）`);
-        continue;
-      }
-    }
-    const entryFile = path.join(base, manifest.main ?? 'index.mjs');
-    if (!fs.existsSync(entryFile)) continue;
-    try {
-      const host = createPluginHost({ name: entry.name, dir: base, main: manifest.main ?? 'index.mjs', log });
-      const info = await host.ready;
-      loaded.push({ name: entry.name, manifest, host });
-      log(`[plugin] 已加载 ${entry.name} v${manifest.version ?? '?'}（${(info.hooks ?? []).join('/') || '无钩子'}，子进程隔离）`);
-    } catch (error) {
-      log(`[plugin] ${entry.name} 加载失败：${error?.message ?? error}`);
-    }
-  }
-  return loaded;
+  return loadPluginsFromDir({ dir: path.join(ROOT, 'plugins'), stateDir: STATE_DIR, log });
 }
 
 /** 依次调用插件的某个钩子；返回最后一个非空结果（用于 onReply 改写）。 */
 async function runPluginHook(hookName, ctx) {
-  let last = null;
-  for (const p of pluginList) {
-    if (!p.host?.has?.(hookName)) continue;
-    try {
-      const result = await p.host.call(hookName, ctx);
-      if (result) last = result;
-    } catch (error) {
-      log(`[plugin:${p.name}] ${hookName} 出错（忽略）：${error?.message ?? error}`);
-    }
-  }
-  return last;
+  return runPluginHookOn(pluginList, hookName, ctx, log);
 }
 
   // ── 记忆多租户 ────────────────────────────────────────────────────────────
@@ -2684,7 +2592,26 @@ process.on('exit', () => { for (const p of pluginList) { try { p.host?.kill?.();
     try {
       const state = extraState.get(key) ?? {};
       const mood = moodFor(key).get();
-      const plan = decideExtras({ text, mood, cfg, recent: state });
+      let cfgForExtras = cfg;
+      try {
+        const gi = cfg.role?.growth?.speak === false ? null : readInfluence(STATE_DIR);
+        if (gi) {
+          const ex = cfg.role?.expression ?? {};
+          cfgForExtras = {
+            ...cfg,
+            role: {
+              ...cfg.role,
+              expression: {
+                ...ex,
+                stickerChance: chanceWithGrowth(ex.stickerChance ?? 0.22, gi.expressiveness),
+                faceChance: chanceWithGrowth(ex.faceChance ?? 0.12, gi.expressiveness),
+                kaomojiChance: chanceWithGrowth(ex.kaomojiChance ?? 0.12, gi.expressiveness)
+              }
+            }
+          };
+        }
+      } catch {}
+      const plan = decideExtras({ text, mood, cfg: cfgForExtras, recent: state });
       if (plan.sticker && stickerEntries.length) {
         const pick = pickSticker(stickerEntries, text);
         if (pick) {
@@ -2735,6 +2662,19 @@ process.on('exit', () => { for (const p of pluginList) { try { p.host?.kill?.();
       budget = memoryBudget(weights.memory);
       out.weights = weights;
     } catch {}
+
+      // M3：成长影响（只调参数，最多 ±20%；关闭或没数据时不介入）
+      try {
+        const gi = cfg.role?.growth?.speak === false ? null : readInfluence(STATE_DIR);
+        if (gi) {
+          budget = {
+            always: memoryBudgetWithGrowth(budget.always, gi.memoryWarmth),
+            relevant: memoryBudgetWithGrowth(budget.relevant, gi.memoryWarmth)
+          };
+          out.growth = { stage: gi.stage, line: gi.stageLine };
+          log('[growth] 影响生效：阶段 ' + gi.stage + ' / 记忆预算 ' + budget.always);
+        }
+      } catch {}
     try {
 
       const blocks = memory.buildPromptBlocks(text, {
@@ -2757,6 +2697,21 @@ process.on('exit', () => { for (const p of pluginList) { try { p.host?.kill?.();
       }
     }
     try {
+      const gi = cfg.role?.growth?.speak === false ? null : readInfluence(STATE_DIR);
+      if (gi?.stageLine) out.context += '【成长】' + gi.stageLine + '\n';
+      // 叙事：主人私聊原样；其他人/群聊必须先过审核（可配范围）
+      const ownerKey = cfg.ownerQQ ? ('private:' + cfg.ownerQQ) : '';
+      const scope = cfg.role?.growth?.narrativeScope === 'owner' ? 'owner' : 'all';
+      const review = cfg.role?.growth?.narrativeReview !== false;
+      let narText = '';
+      if (gi?.narrative && cfg.role?.growth?.narrative !== false) {
+        if (ownerKey && String(key) === ownerKey) narText = gi.narrative;
+        else if (scope === 'all') narText = review ? (reviewNarrative(gi.narrative) || '') : '';
+      }
+      if (narText) out.context += '【你记得】' + narText + '\n';
+    } catch {}
+
+    try {
       const mstate = moodFor(key);
       const score = mstate.get();
       if (Math.abs(score) >= 1) {
@@ -2774,7 +2729,9 @@ process.on('exit', () => { for (const p of pluginList) { try { p.host?.kill?.();
         try { hint = currentRoleHint() || ''; } catch {}
         level = autoEmotionLevel({ base: level, moodScore, text, roleHint: hint });
       }
-      out.emotion = emotionPrompt(level, weights.emotion);
+      let growthEmotionWeight = weights.emotion;
+      try { const gi = cfg.role?.growth?.speak === false ? null : readInfluence(STATE_DIR); if (gi) growthEmotionWeight = emotionWeightWithGrowth(weights.emotion, gi.toneBias); } catch {}
+      out.emotion = emotionPrompt(level, growthEmotionWeight);
     } catch {}
 
     // 隐藏区：只有命中关键词才被「检索」出来
@@ -3147,6 +3104,12 @@ process.on('exit', () => { for (const p of pluginList) { try { p.host?.kill?.();
         if (r.example) entry.example = r.example;
         if (r.risk) entry.risk = r.risk;
         if (Array.isArray(r.sources) && r.sources.length) entry.sources = r.sources.map((s) => String(s ?? '').trim()).filter(Boolean).slice(0, 10);
+        entry.confidence = clampConfidence(r.confidence ?? 0.6);
+        entry.expiresAt = expiresAtFromNow(Number(cfg.slang?.ttlDays ?? 90));
+        entry.source = 'auto_crawl';
+        if (entry.confidence >= Number(cfg.slang?.confidenceMin ?? 0.5)) {
+          entry.status = SLANG_STATUS.CONFIRMED;
+        }
         entry.lastInferenceCount = entry.count;
         entry.updatedAt = new Date().toISOString();
       }
@@ -3159,6 +3122,35 @@ process.on('exit', () => { for (const p of pluginList) { try { p.host?.kill?.();
       log('黑话研究失败:', error?.message ?? error);
     } finally {
       for (const e of targets) slangResearchingIds.delete(e.id);
+    }
+  }
+
+  // 用户在问“这是什么意思/什么梗/谐音”时，才主动学；10 分钟内同一会话只触发一次。
+  function maybeLearnSlangFromQuestion(key, text, sender) {
+    if (cfg.slang?.enabled === false || cfg.slang?.askTrigger === false) return;
+    if (!dshReady || !text) return;
+    if (!isAskingMeaning(text)) return;
+    const cooldown = Number(cfg.slang?.askCooldownMs ?? 600000);
+    if (Date.now() - (slangAskCooldowns.get(key) ?? 0) < cooldown) return;
+    const terms = extractAskedTerms(text);
+    if (!terms.length) return;
+    slangAskCooldowns.set(key, Date.now());
+    const ttl = Number(cfg.slang?.ttlDays ?? 90);
+    const candidates = [];
+    for (const term of terms) {
+      const result = upsertSlangEntry(slangEntries, term, {
+        source: 'auto_crawl',
+        confidence: 0,
+        expiresAt: expiresAtFromNow(ttl),
+        evidence: [{ key, sender: String(sender || '未知'), text: String(text).slice(0, 120), time: Date.now() }],
+        countIncrement: 1
+      });
+      if (result.entry) candidates.push(result.entry);
+    }
+    saveSlangStore();
+    log('黑话问梗：' + key + ' 候选 ' + candidates.map((c) => c.content).join('、'));
+    if (candidates.length && cfg.slang?.autoResearch !== false) {
+      queueSlangTask(() => runSlangResearch(candidates));
     }
   }
 
@@ -3386,7 +3378,6 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
   // 新版 DSH 事件流需要显式 follow；启动时为已持久化的 QQ 会话补上。
   for (const sessionId of Object.values(state.sessions)) api.events.follow(sessionId);
   const sessionPromises = new Map(); // key -> create promise（防并发重复创建）
-  const promptQueues = new Map(); // key -> { queue: [], running: false }：每个 QQ 会话串行投递 DSH prompt，保证 turn 顺序
 
   // ── Token 用量账本（控制台「令牌与花费」） ───────────────────────────────
   // 权威总量取 DSH 的 tokenUsage 投影（整条会话日志累计，含桥接启动前的历史），
@@ -4467,9 +4458,16 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
           const qOwner = String(url.searchParams.get('owner') ?? 'developer');
           try { setMemoryOwner(qOwner === 'developer' ? 'developer' : { user: qOwner }); } catch {}
           const kind = qKey.startsWith('group:') ? 'group' : 'private';
+          const previewCfg = loadConfig();
           let out = {};
-          try { out = composeInjection({ key: qKey, kind, text: qText, cfg: loadConfig() }); } catch (error) { out = { error: String(error?.message ?? error) }; }
-          sendJson({ ok: true, key: qKey, owner: qOwner, text: qText, ...out });
+          try { out = composeInjection({ key: qKey, kind, text: qText, cfg: previewCfg }); } catch (error) { out = { error: String(error?.message ?? error) }; }
+          const guard = guardIncomingText(qText);
+          sendJson({
+            ok: true, key: qKey, owner: qOwner, text: qText,
+            personaAnchor: previewCfg.role?.personaAnchor !== false ? buildPersonaAnchor() : '',
+            guard: { truncated: guard.truncated, chars: guard.chars, lines: guard.lines, omittedChars: guard.omittedChars ?? 0, omittedLines: guard.omittedLines ?? 0 },
+            ...out
+          });
           return;
         }
 
@@ -8280,214 +8278,6 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     return lastSendFailed.get(key) !== true;
   }
 
-  // ── 真人式分条发送 ──────────────────────────────────────────────────────
-  function singleLineForQQ(s) {
-    return String(s ?? '')
-      .replace(/\s*\n\s*/g, ' ')
-      .replace(/[ \t]{2,}/g, ' ')
-      .trim();
-  }
-
-  // 超长段落：先按次要标点拆，再按字符硬拆，保证不丢内容、不退回单条长消息。
-  // URL 会被当作不可拆分的原子，避免把 https://... 这种整条网页地址拆断。
-  function splitLongSegment(segment, max) {
-    const s = String(segment ?? '').trim();
-    if (!s) return [];
-    const safeMax = Number.isFinite(max) && max >= 1 ? Math.floor(max) : 500;
-    if (s.length <= safeMax) return [s];
-
-    const urlRe = /https?:\/\/[^\s，。；、]+/g;
-    const urls = [];
-    const masked = s.replace(urlRe, (m) => {
-      urls.push(m);
-      return `\u0000URL${urls.length - 1}\u0000`;
-    });
-
-    const raw = masked.split(/([，、；：,;:])/);
-    const tokens = [];
-    for (let i = 0; i < raw.length; i += 2) {
-      tokens.push(((raw[i] ?? '') + (raw[i + 1] ?? '')).trim());
-    }
-    const out = [];
-    let cur = '';
-    // ⚠️ 占位符 \u0000URL<n>\u0000 必须是**不可切开的最小单位**。
-    // 早先的实现对超长 token 直接按 safeMax 硬切，会把占位符拦腰截断
-    // （如 "\u0000UR" + "L0\u0000"），后面的还原正则 \u0000URL(\d+)\u0000 就匹配不上 →
-    // **URL 整条丢失 + 裸 NUL + 字面量 "URL0" 被发进 QQ 消息**（实测 13 个偏移里 5 个损坏）。
-    // 这里改成按占位符边界切分，宁可某段略超 max 也绝不切碎占位符。
-    const PLACEHOLDER_ANY = /\u0000URL\d+\u0000/;
-    const PLACEHOLDER_ALL = /\u0000URL\d+\u0000/g;
-    /** 把 token 切成 {text, isPlaceholder} 序列（占位符整体一块，绝不拆） */
-    const splitByPlaceholder = (tok) => {
-      const parts = [];
-      let last = 0;
-      let m;
-      PLACEHOLDER_ALL.lastIndex = 0;
-      while ((m = PLACEHOLDER_ALL.exec(tok)) !== null) {
-        if (m.index > last) parts.push({ text: tok.slice(last, m.index), isPlaceholder: false });
-        parts.push({ text: m[0], isPlaceholder: true });
-        last = m.index + m[0].length;
-      }
-      if (last < tok.length) parts.push({ text: tok.slice(last), isPlaceholder: false });
-      return parts;
-    };
-    for (const tok of tokens) {
-      if (!tok) continue;
-      if (tok.length > safeMax) {
-        if (cur) { out.push(cur); cur = ''; }
-        for (const piece of splitByPlaceholder(tok)) {
-          // 占位符整块输出；普通文本仍按 safeMax 切
-          if (piece.isPlaceholder) { out.push(piece.text); continue; }
-          for (let i = 0; i < piece.text.length;) {
-            let end = Math.min(i + safeMax, piece.text.length);
-            // 绝不在代理对（emoji、部分生僻字）中间下刀：硬切会产生「半个 emoji」，
-            // 两个孤立代理各自成为一条 QQ 消息、永远无法再拼回，群友看到的就是乱码方块。
-            // 退一格把整个字符让给下一段；若退成空串就不退（safeMax 极小时），
-            // 宁可硬切也要保证循环一定前进。逻辑内联在此，函数保持自包含
-            // —— test-voice.mjs 会把这个函数的源码单独 eval 出来测。
-            if (end < piece.text.length && end - i > 1) {
-              const last = piece.text.charCodeAt(end - 1);
-              if (last >= 0xd800 && last <= 0xdbff) end -= 1;
-            }
-            out.push(piece.text.slice(i, end));
-            i += end > i ? end - i : safeMax;
-          }
-        }
-      } else if (cur.length + tok.length <= safeMax) {
-        cur += tok;
-      } else {
-        out.push(cur);
-        cur = tok;
-      }
-    }
-    if (cur) out.push(cur);
-
-    return out
-      .map((chunk) => chunk.replace(/\u0000URL(\d+)\u0000/g, (_, i) => urls[Number(i)] ?? ''))
-      .filter(Boolean);
-  }
-
-  // 判断字符是否属于“中文汉字”范围，用于识别空格分句意图。
-  // 注意：这里只认汉字，不认中文标点/全角符号，避免“你好， 世界”这种 AI 排版空格被误拆。
-  function isCjkChar(ch) {
-    if (!ch) return false;
-    const code = ch.codePointAt(0);
-    return (
-      (code >= 0x4E00 && code <= 0x9FFF) ||
-      (code >= 0x3400 && code <= 0x4DBF) ||
-      (code >= 0xF900 && code <= 0xFAFF)
-    );
-  }
-
-  // 按“有意的空格”拆分：真人不会主动用空格，因此 AI 回复里的空格视为分条信号。
-  // 空格两侧只要有一侧是中文/中文标点，就按分条处理（包括中英文/数字之间的空格）。
-  // 注意：该逻辑只用于一代 reserved 的自动转发文本；二代 reserved2 不走这里，二代必须显式用数组分条。
-  /** 把括号内的空格换成占位符，避免颜文字被按空格拆碎。 */
-  function protectKaomojiSpaces(src) {
-    let out = '';
-    let depth = 0;
-    for (const ch of String(src ?? '')) {
-      if ('([{（【<╭'.includes(ch)) depth += 1;
-      else if (')]}）】>╮'.includes(ch)) depth = Math.max(0, depth - 1);
-      if (/\s/.test(ch) && depth > 0) out += '\u0001';
-      else out += ch;
-    }
-    return out;
-  }
-
-  function splitByCjkSpaces(src) {
-    // 颜文字里到处都是空格（(工 ^ 工 🌸)），直接按空格切会把表情拆成好几条。
-    // 先把括号内的空格替换成占位符，切完再还原。
-    const protectedText = protectKaomojiSpaces(src);
-    const tokens = protectedText.split(/\s+/).map((t) => t.trim()).filter(Boolean);
-    if (tokens.length <= 1) return tokens.map((t) => t.replace(/\u0001/g, ' '));
-
-    const isSymbolOnly = (t) => /^[^\p{L}\p{N}]+$/u.test(t);
-    const groups = [];
-    let cur = tokens[0];
-    for (let i = 1; i < tokens.length; i++) {
-      const prevLast = [...cur].pop() || '';
-      const currFirst = [...tokens[i]][0] || '';
-      // 纯符号/表情 token（^、✨、工 之间的连接符）不单独成条，粘在前后文里
-      if (isSymbolOnly(tokens[i]) || isSymbolOnly(cur)) {
-        cur = cur + ' ' + tokens[i];
-        continue;
-      }
-      // 空格两侧只要有一侧是汉字，就视为分条信号。
-      if (isCjkChar(prevLast) || isCjkChar(currFirst)) {
-        groups.push(cur);
-        cur = tokens[i];
-      } else {
-        cur = cur + ' ' + tokens[i];
-      }
-    }
-    if (cur) groups.push(cur);
-    return groups.map((g) => g.replace(/\u0001/g, ' '));
-  }
-
-  /**
-   * 【本地适配 2026-10-25】把 closed-agent/chat 的整段回复切成 1~3 个气泡。
-   *
-   * 真人不会把一句话全塞进一个气泡：先发一句，隔一会儿补一句。这里按句读切，
-   * 最多 3 条、单条不超过 40 字；太短（≤18 字且没有句读）就只发一条，
-   * 免得把「草」拆成两条反而怪。
-   */
-  function splitReplyIntoBubbles(text, { maxBubbles = 5, maxLen = 40 } = {}) {
-    const raw = String(text ?? '').trim();
-    if (!raw) return [];
-    const flat = raw.replace(/\r?\n+/g, ' ').replace(/\s{2,}/g, ' ').trim();
-    // 只有极短的一句（"草""行"）才无条件单发；其余按句读切
-    if (flat.length <= 6) return [flat];
-
-    let parts = flat.split(/(?<=[。！？!?~～…])/).map((s) => s.trim()).filter(Boolean);
-    if (parts.length <= 1) {
-      parts = flat.split(/(?<=[，,；;])/).map((s) => s.trim()).filter(Boolean);
-    }
-    // 没有标点但有空格（人格卡示例就爱用空格断意群）时，也按空格分条
-    if (parts.length <= 1) {
-      // 颜文字里空格很多，先保护再按空格分，避免 (工 ^ 工 🌸) 被拆成碎片
-      parts = protectKaomojiSpaces(flat)
-        .split(/\s+/)
-        .map((s) => s.replace(/\u0001/g, ' ').trim())
-        .filter(Boolean);
-    }
-    if (parts.length <= 1) return [flat];
-
-    // 取前 maxBubbles 条，超出的尾巴全部并进最后一条（宁可长一点，也不刷屏）
-    const out = parts.slice(0, maxBubbles);
-    if (parts.length > maxBubbles) out[maxBubbles - 1] += parts.slice(maxBubbles).join('');
-    // 单条过长时不再硬切，交给下游的 500 字安全拆分
-    return out.filter((s) => s.trim().length > 0);
-  }
-
-  // 新分句逻辑：分句权交给 AI。
-  // AI 用空格表示“这里要分成下一条消息”，桥接按空格拆条；
-  // 不想分条时用标点连接、不加空格即可。单条消息只做 maxReplyChars（默认 500 字）安全硬拆。
-  function planSocialTimeline(text, socialCfg) {
-    const src = String(text ?? '').replace(/\r\n/g, '\n').trim();
-    const rawMaxChars = Number(socialCfg?.maxReplyChars ?? 500);
-    const maxChars = Number.isFinite(rawMaxChars) && rawMaxChars >= 1 ? Math.floor(rawMaxChars) : 500;
-    const enabled = socialCfg?.burstEnabled !== false;
-    if (!src) return { main: [], followUp: null };
-
-    // 关闭分条：整条作为一条消息发送，只做安全硬拆
-    if (!enabled) {
-      return { main: splitLongSegment(src, maxChars).map(singleLineForQQ), followUp: null };
-    }
-
-    // 按空格（含换行）拆成候选消息；每个候选再按 maxChars 安全硬拆
-    const parts = splitByCjkSpaces(src);
-    if (parts.length <= 1) {
-      return { main: splitLongSegment(parts[0] || src, maxChars).map(singleLineForQQ), followUp: null };
-    }
-
-    const main = [];
-    for (const part of parts) {
-      main.push(...splitLongSegment(part, maxChars).map(singleLineForQQ));
-    }
-    return { main: main.filter(Boolean), followUp: null };
-  }
-
   // 分条发送：与 sendToQQ 共用同一 sendChain，严格顺序；条间随机间隔，
   // 有概率使用长间隔（错落感）；最后一条后不再 sleep。
   function sendBurstToQQ(key, messages, socialCfgOrMin, maybeMax) {
@@ -10181,47 +9971,6 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
   }
 
   // 启动阶段的"明确与 AI 有关"：@ / 提到名字 / 必回关键词 / 管理员私聊
-  function isDirectAddress(textContent, event, kind) {
-    if (kind !== 'group') return true;
-    const lower = String(textContent ?? '').toLowerCase();
-    const selfId = String(event?.self_id ?? '');
-    if (selfId && lower.includes('@' + selfId)) return true;
-    if (selfNickname && (lower.includes('@' + selfNickname) || lower.includes(selfNickname))) return true;
-    for (const kw of (cfg.social?.mustReplyKeywords ?? [])) {
-      if (lower.includes(String(kw).toLowerCase())) return true;
-    }
-    if (isDirectedAtAi(textContent)) return true;
-    return false;
-  }
-
-  // 是否"直接针对 AI"的提问/挑战：提到 AI 相关词且带疑问/比较，或对"你"开火，或追问催促
-  function isDirectedAtAi(textContent) {
-    const lower = String(textContent ?? '').toLowerCase();
-    const aiMention = /deepseek|claude|chatgpt|gpt|大肥鱼|小鲸鱼|鲸鱼|d指导|d老师|d师傅|深度求索|\bds\b|ai|人工智障|机器人|模型/.test(lower);
-    const challenge = /强|弱|行不行|能不能|会不会|是不是|一半|水平|垃圾|废物|白嫖|菜|不如|厉害|赢|输|比.*强|比.*弱/.test(lower);
-    const question = /[?？吗呢吧]|怎么|为什么|哪|谁/.test(lower);
-    if (aiMention && (question || challenge)) return true;
-    // "你/您" + 疑问/比较/挑战（放宽，避免漏掉"你有claude一半强吗"这类直接问）
-    if (/(你|您).{0,10}(吗|呢|？|\?|怎么|是不是|能不能|行不行|有没有|有|没有|比|不如|强|弱|一半|厉害|垃圾|菜|赢|输)/.test(lower)) return true;
-    if (/^(你|您)(是不是|行不行|能不能|会不会|觉得|有|没有)/.test(lower)) return true;
-    // "你是...还是... / 你是...吗 / 你是...？"（如：你是人类还是ai、你是真人吗）
-    if (/(你|您)是[^？?。！!]{0,14}(还是|或者|吗|么|？|\?)/.test(lower)) return true;
-    // 追问/催促：AI 没回时的真人式催促
-    if (/怎么不说话|人呢|回我|说话啊|理我|别装死|在不在|装死|说话/.test(lower)) return true;
-    return false;
-  }
-
-  // 活跃期批量检测用的"必须回"判断：不依赖 event，只认昵称/关键词/直接针对 AI 的提问
-  function isMustReplyText(textContent) {
-    const lower = String(textContent ?? '').toLowerCase();
-    if (selfNickname && (lower.includes('@' + selfNickname) || lower.includes(selfNickname))) return true;
-    for (const kw of (cfg.social?.mustReplyKeywords ?? [])) {
-      if (lower.includes(String(kw).toLowerCase())) return true;
-    }
-    if (isDirectedAtAi(textContent)) return true;
-    return false;
-  }
-
   function appendRecentMessage(key, sender, textContent, plainText, quoteTargetIsSelf = false, isOwner = false, media = [], messageRef = '') {
     if (!social.recentMessages.has(key)) social.recentMessages.set(key, []);
     const arr = social.recentMessages.get(key);
@@ -10301,10 +10050,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     social.silentTurns.clear();
     social.exitingSessions.clear();
     // 拒绝仍在排队中的 prompt，避免调用方 await 永远挂起
-    for (const [, entry] of promptQueues) {
-      for (const item of entry.queue) item.reject(new Error('模式切换，已取消排队中的投递'));
-    }
-    promptQueues.clear();
+    promptQueue.drainAll('模式切换，已取消排队中的投递');
   }
 
   function leaveActive(key) {
@@ -10317,25 +10063,18 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
   // allowSilent=false 表示这条必须回（被 @/点名/私聊等），不提供 [SILENT] 出口。
   function buildBatchPrompt(key, newMsgs, allowSilent = true) {
     const lines = newMsgs.map((m) => `${m.isOwner ? '【管理员】' : ''}${m.sender}：${m.text}${mediaHintFor(key, m.messageId, m.media)}`).join('\n');
-    const directionHint = lines.includes('[引用') ? `${DIRECTION_HINT}\n` : '';
-    if (!allowSilent) {
-      return `【新消息】\n${lines}\n\n${directionHint}请回复消息。\n${SPACE_SPLIT_HINT}`;
-    }
-    return `【新消息】\n${lines}\n\n${directionHint}请根据情况决定是否回复。如果不需要回应、想潜水/不接话，请只输出 ${SILENT_MARKER}；否则正常回复。\n${SPACE_SPLIT_HINT}`;
+    return buildBatchPromptText({ lines, allowSilent });
   }
 
   // 冷场试探：让 AI 基于会话自然说一句（只给状态背景，不注入"试探"意图）
   function buildProbePrompt(key) {
-    return `【群聊上下文】\n${buildContextBlock(key)}\n\n群里安静了一会儿，你可以说点什么。如果不想说，请只输出 ${SILENT_MARKER}。\n${SPACE_SPLIT_HINT}`;
+    return buildProbePromptText({ contextBlock: buildContextBlock(key) });
   }
 
   // 活跃超时退场：让 AI 自然地说一句收尾/潜水话，说完后安静下来。
   // 只给“该收尾了”的暗示，不暴露桥接的计时机制。
   function buildActiveExitPrompt(key, roleHint) {
-    let p = '';
-    if (roleHint) p += roleHint + '\n\n';
-    p += `【群聊上下文】\n${buildContextBlock(key)}\n\n你已经参与群聊有一阵子了，现在该自然地收尾/潜水了。请说一句简短的退场话（例如“我先潜水了”“你们聊，我摸鱼去了”），说完后就安静下来，不再继续接话。`;
-    return p;
+    return buildActiveExitPromptText({ roleHint, contextBlock: buildContextBlock(key) });
   }
 
   // 活跃超时判定：到达进入活跃时随机出的最长时间后，安排一次“收尾退场”投递，
@@ -10366,10 +10105,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
 
   // 二期：观望阶段主动开话题（第三种触发）
   function buildProactivePrompt(key, roleHint) {
-    let p = '';
-    if (roleHint) p += roleHint + '\n\n';
-    p += `【群聊上下文】\n${buildContextBlock(key)}\n\n群内已经长时间没人说话了，你打算开启一个新话题。优先结合你的人格/角色设定的兴趣，其次结合群里大家的兴趣，挑一个合适的话题。可以联网搜索一些新鲜话题来聊。如果你觉得现在不适合开口，可以只输出 ${SILENT_MARKER}。\n${SPACE_SPLIT_HINT}`;
-    return p;
+    return buildProactivePromptText({ roleHint, contextBlock: buildContextBlock(key) });
   }
 
   // 实际的 DSH prompt 投递（不再直接对外暴露，统一走 promptQueues 串行队列）。
@@ -10415,15 +10151,14 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       wakeToken = wakeState.agentToken;
       promptText = buildWakePromptV2(key, opts.wakeReason);
       wakeSnapshot = buildWakeSnapshotV2(key);
-      if (wakeSnapshot) {
-        promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已提供，无需重复查询；partial=true 时用 qq_get_unread_messages(afterSeq=readThroughSeq) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。`;
-      }
+      promptText = appendWakeSnapshot(promptText, wakeSnapshot);
     }
-    let content = [{ type: 'text', text: withSlangContext(promptText) }];
-    if (Array.isArray(opts.media) && opts.media.length > 0) {
-      const imageParts = await resolveMediaList(opts.media);
-      content = [{ type: 'text', text: withSlangContext(promptText) }, ...imageParts];
-    }
+    const content = await buildDeliveryContent({
+      promptText,
+      media: opts.media,
+      withSlangContext,
+      resolveMediaList
+    });
     // 媒体解析成功后再标记退场，避免解析异常时残留退场标记。
     if (!isCurrentSession(key, sessionId)) throw new Error('投递前会话已重置或权限已变化');
     if (opts.farewell) social.exitingSessions.add(sessionId);
@@ -10437,7 +10172,11 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     if (!accepted.result.ok) {
       if (opts.farewell) social.exitingSessions.delete(sessionId);
       const errText = `${accepted.result.error.code}: ${accepted.result.error.message}`;
-      const safeErrText = shouldAuditKey(key) && SENSITIVE_RE.test(errText) ? '（含敏感信息，已隐藏）' : errText;
+      const safeErrText = deliveryErrorText({
+        code: accepted.result.error.code,
+        message: accepted.result.error.message,
+        shouldRedact: shouldAuditKey(key) && SENSITIVE_RE.test(errText)
+      });
       if (!opts.silent) await sendToQQ(key, `⚠️ 消息未被接受：${safeErrText}`);
       return { ok: false, error: safeErrText };
     }
@@ -10457,41 +10196,13 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     return { ok: true };
   }
 
-  // 每个 QQ 会话串行投递 DSH prompt，保证 turn 完成顺序与提交顺序一致，
-  // 从而让 [SILENT]、摘要静默、退场标记都能准确匹配到自己的 turn。
-  function deliverPrompt(key, promptText, opts = {}) {
-    return new Promise((resolve, reject) => {
-      let entry = promptQueues.get(key);
-      if (!entry) {
-        entry = { queue: [], running: false };
-        promptQueues.set(key, entry);
-      }
-      entry.queue.push({ promptText, opts, resolve, reject });
-      processPromptQueue(key);
-    });
-  }
+  const promptQueue = createPromptQueue({
+    deliver: (key, promptText, opts) => deliverPromptNow(key, promptText, opts)
+  });
 
-  async function processPromptQueue(key) {
-    const entry = promptQueues.get(key);
-    if (!entry || entry.running) return;
-    const item = entry.queue.shift();
-    if (!item) {
-      if (entry.queue.length === 0) promptQueues.delete(key);
-      return;
-    }
-    entry.running = true;
-    try {
-      const result = await deliverPromptNow(key, item.promptText, item.opts);
-      item.resolve(result);
-    } catch (error) {
-      item.reject(error);
-    } finally {
-      entry.running = false;
-      if (promptQueues.get(key) === entry) {
-        if (entry.queue.length) processPromptQueue(key);
-        else promptQueues.delete(key);
-      }
-    }
+  // 每个 QQ 会话串行投递 DSH prompt，保证 turn 完成顺序与提交顺序一致。
+  function deliverPrompt(key, promptText, opts = {}) {
+    return promptQueue.enqueue(key, promptText, opts);
   }
 
   function scheduleSocialReply(key, promptText, minDelay, maxDelay, label, farewell = false, media = null) {
@@ -11544,92 +11255,33 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
   // @自己 当成 @别人、已读不回（issue #29）。群名片可能与昵称不同，但 at/引用段里
   // 带的是 QQ 号，所以两条都给。
   function selfIdentityTextV2() {
-    const name = String(selfDisplayName || '').trim();
-    const id = String(selfUserId || '').trim();
-    if (!name && !id) return '';
-    const label = name ? `「${name}」` : '（昵称未取到）';
-    const idText = id ? `（QQ ${id}）` : '';
-    const callBits = name
-      ? `消息里出现「@${name}」、有人叫「${name}」、或引用你的消息，指的都是你 —— 不要当成别人`
-      : '被 @、被叫到你的昵称、或引用你的消息，指的都是你 —— 不要当成别人';
-    return `【你的身份】你在 QQ 上的昵称是${label}${idText}。${callBits}；群名片可能与昵称不同，at/引用段里带${id ? ` ${id} ` : '你的 QQ 号'}就是在叫你。\n\n`;
+    return selfIdentityText(selfDisplayName, selfUserId);
   }
 
   function buildWakePromptV2(key, reason) {
-    const roleState = readRoleState();
-    const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
-    const identityLine = selfIdentityTextV2();
-    const st = getSocialV2State(key);
-    const tokenLine = `【会话令牌】${st.agentToken}（调用二代状态工具时请在参数中带上此令牌）\n\n`;
-    const memoryText = formatMemoryV2(st);
-    const memoryLine = memoryText ? `${memoryText}\n\n` : '';
-    // 注意：黑话表不在这里注入，deliverPromptNow 的 withSlangContext 会统一注入，
-    // 避免唤醒 prompt 出现两份黑话表。
-    const participationText = formatParticipationV2(st);
-    const participationLine = participationText ? `${participationText}\n\n` : '';
-    const antiAiLine = '【反AI味】你不是客服：不用有求必应，可以装傻、已读乱回、拒绝推荐；少用“一绝/真管用/保证/绝对”这类词。\n\n';
-    const stickerCfg = cfg.socialV2?.sticker ?? {};
-    const stickerLine = stickerCfg.enabled !== false && stickerCfg.includeInPrompt !== false
-      ? `${buildStickerStrategyHint()}\n${buildStickerContext(stickerEntries, stickerCfg.promptMaxStickers ?? 8)}\n\n`
-      : '';
-    const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
-    const proactiveLine = '【积极性】不要习惯性潜水：群里有你能接的话题就主动参与，偶尔插一句别人的话题也很正常；只有确实没话可说、对方已明确结束、或长时间没人说话时才潜水。\n\n';
-    const replyTiming = replyTimingV2(st);
-    const replyLine = `【首回复节奏】先处理已有消息，完整的问题及时回答。需要确认对方是否继续补充时，用 qq_wait_for_messages(purpose="reply", quietMs=${replyTiming.quietMs})；从最后来信计时，合批和读提示词的耗时也算，目前还差约 ${Math.ceil(replyTiming.remainingQuietMs / 1000)} 秒静默。已安静够久可直接回，工具也会立即返回并补上思考期间的新消息。只有明确没说完、你确实要等下文时，才用普通 messages 长等待。\n\n`;
-    const preSleepLine = `【沉睡前强制等待】这是决定潜水收尾时的步骤，不是首回复的前置条件。除非对方明确说“不聊了/晚安/下了/拜拜”等结束语，否则每次设置潜水/下一次唤醒前，必须先调用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成一次沉睡前观察；回复前 purpose="reply" 的短静默不能代替这次完整观察。若 ${Math.round(preSleepMs / 60000)} 分钟内没人说话，返回 preSleepWaitSatisfied=true，可以设置下一次唤醒并沉睡；若期间有人发新消息，先查看返回的 newMessages——判断不需要你参与就可以直接沉睡，若你选择参与回复，则下次想睡时需要重新等待观察窗口。【不要靠猜】：等待返回里的 canSleepNow/hint 就是闸门的判断结果——canSleepNow=true 立刻收尾（mark_read 或 set_wake_config）；false 时按 hint 给出的 timeoutMs 一次等满，别用更短的 timeoutMs 去凑（更短的等待不算观察，只会白等一轮）。\n\n`;
-    const lastMsg = [...(Array.isArray(st.recentMessages) ? st.recentMessages : [])].reverse().find((m) => m && !m.isSelf);
-    const lastAiMin = st.lastAiReplyAt ? Math.max(0, Math.round((Date.now() - Number(st.lastAiReplyAt)) / 60000)) : null;
-    const statusBits = [`未读 ${(st.unread || []).length} 条`];
-    if (lastMsg) {
-      const lastAgo = describeAge(lastMsg.time, Date.now());
-      statusBits.push(`最近一条来自 ${String(lastMsg.sender || '未知')}${lastAgo ? `（${lastAgo} 前）` : ''}：${String(lastMsg.text || lastMsg.plain || '').slice(0, 30)}`);
-    }
-    if (lastMsg && looksLikeUnfinished(String(lastMsg.tail || lastMsg.plain || lastMsg.text || ''))) statusBits.push('对方可能没说完');
-    if (lastAiMin != null) statusBits.push(`你上次发言 ${lastAiMin} 分钟前`);
-    const statusLine = `【此刻状态】${statusBits.join('；')}\n\n`;
-    const wc = st.wakeConfig || {};
-    const wcTr = wc.triggers || {};
-    const wcMode = wc.mode === 'active' ? '活跃' : '潜水';
-    const wcTime = wc.infinite ? '无限' : (wc.sleepUntil && Number.isFinite(Date.parse(wc.sleepUntil)) ? `有限至 ${new Date(wc.sleepUntil).toLocaleString()}` : '未设时间');
-    const wcTriggers = [];
-    if (wcTr.atMention) wcTriggers.push('@');
-    if (wcTr.nameMention) wcTriggers.push('名字');
-    if (Array.isArray(wcTr.keywords) && wcTr.keywords.length) wcTriggers.push('关键词');
-    if (wcTr.question) wcTriggers.push('提问');
-    if (wcTr.poke) wcTriggers.push('拍一拍');
-    if (Array.isArray(wcTr.speakerIds) && wcTr.speakerIds.length) wcTriggers.push(`指定成员(${wcTr.speakerIds.length}:${wcTr.speakerIds.join(',')})`);
-    if (wcTr.anyMessage) wcTriggers.push('任意消息');
-    if (Number(wcTr.probability) > 0) wcTriggers.push(`概率${wcTr.probability}`);
-    const wakeLine = `【当前唤醒】${wcMode}，${wcTime}${wcTriggers.length ? `；触发：${wcTriggers.join('/')}` : ''}\n\n`;
-    // 操作者预写的「初始提示词」（圈子主题/群内氛围等）：**只在首次唤醒**注入。
-    // 放在最前面几段（角色/令牌之后）而不是末尾，是为了让它在长 prompt 里足够显眼；
-    // 后续唤醒不再带它 —— 那时它已经在这条 DSH 会话的上下文里了。
-    const initialPromptText = reason === 'bootstrap' ? formatInitialPromptV2(key) : '';
-    const initialPromptLine = initialPromptText ? `${initialPromptText}\n\n` : '';
-    // 时间感放在 base 的最末尾：紧接着就是【唤醒】原因与行动指令，位置最显眼。
-    const timeSenseLine = buildTimeSenseLine(st);
-    const base = roleLine + identityLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + stickerLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + preSleepLine + timeSenseLine;
-    // 唤醒原因里的那条消息本身多旧：`atMention@seq194` 这种形态能反查到原消息。
-    const triggeredSeq = wakeReasonSeq(reason);
-    const triggeredMsg = triggeredSeq ? findV2MessageBySeq(st, triggeredSeq) : null;
-    const triggeredAgo = triggeredMsg ? describeAge(triggeredMsg.time, Date.now()) : '';
-    const triggeredLine = triggeredAgo ? `（触发这条是 ${triggeredAgo} 前发的${triggeredMsg?.sender ? `，来自「${triggeredMsg.sender}」` : ''}，不是刚刚）` : '';
-    if (reason === 'bootstrap') {
-      return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
-    }
-    if (reason === 'timeout') {
-      return `${base}【唤醒】${key}\n原因：你设置的有限潜水时间已到；在你规定的时间内没有任何一项条件被触发，只是因为时间到了所以你被唤醒。\n你可以查看消息，或继续设置新的唤醒条件。`;
-    }
-    if (reason === 'replyCheck') {
-      return `${base}【回复检查】${key}\n原因：你刚刚发送过消息，现在回来检查是否有人回复。\n已有回复时先看消息，需要短静默就用 qq_wait_for_messages(purpose="reply") 判断对方是否说完；如果没人回你，不用硬补一句，但也不要立刻潜水——先调用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成沉睡前观察：没人说话可收尾；有人说话则查看 newMessages，不需要你参与也可直接收尾（qq_mark_read 或 qq_set_wake_config）。`;
-    }
-    if (reason === 'proactiveCheck') {
-      return `${base}【主动机会】${key}\n原因：群里已经安静了一段时间，这是一次你可以主动冒泡的机会。\n优先主动开个话题、追问上次没聊完的事、分享一个刚想到的想法；如果一时想不到，可以用 mcp__web-search-safe__web_search 搜一下当前热点/时事/网络热梗，再结合记忆里的群友兴趣挑一个自然角度。只要内容自然，就大胆开口；如果实在没话想说，再安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
-    }
-    if (reason === 'poke') {
-      return `${base}【唤醒】${key}\n原因：有人拍了一拍（可能拍了你，也可能拍了别人）。\n先看未读/最近消息里的 [拍一拍] 事件：如果是拍你，可以自然回应一句，也可以用 qq_send_poke 回一个拍一拍；如果是拍别人，觉得有趣也可以接梗。除了回应，偶尔也可以主动戳一下正在聊的人/熟人，像真人手贱/提醒/逗一下，但别频繁。不想接就安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
-    }
-    return `${base}【唤醒】${key}\n原因：${reason}${triggeredLine}\n【行动前】先判断：群里在聊什么？热闹还是冷清？有没有人直接找你？对方说完了吗？你有没有真正想说的？\n如果群聊正热但没人叫你，可以插一句有趣的/相关的，插不上再看情况潜水；不要一上来就划走。\n【引用：只在必要时用】只有你这条消息指向的人或消息并非最新一条别人的消息，或者你连续的几句话中不同消息指代的是不同的消息或人时，才用 qq_reply 或 qq_send_message 的 replyToMessageId 指向具体那条；其他情况不要引用，别让对方猜。\n你可以调用工具查看未读消息、人设、状态，自行决定是否发言；决定潜水前必须按上面的【沉睡前强制等待】先等够观察窗口。`;
+    return renderWakePromptV2({
+      key,
+      reason,
+      deps: {
+        readRoleState,
+        selfIdentityTextV2,
+        getSocialV2State,
+        formatMemoryV2,
+        formatParticipationV2,
+        stickerCfg: cfg.socialV2?.sticker ?? {},
+        stickerEntries,
+        buildStickerStrategyHint,
+        buildStickerContext,
+        preSleepMs: Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000),
+        replyTimingV2,
+        describeAge,
+        looksLikeUnfinished,
+        formatInitialPromptV2,
+        buildTimeSenseLine,
+        wakeReasonSeq,
+        findV2MessageBySeq
+      }
+    });
   }
 
   function buildWakeReminderPromptV2(key) {
@@ -11798,9 +11450,9 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
   function busyReasonV2(key, st) {
     if (st?.pendingWakeTimer) return 'pendingWakeTimer';
     if (pendingWakeKeys.has(key)) return 'pendingWakeKey';
-    const q = promptQueues.get(key);
-    if (q?.running) return 'promptRunning';
-    if (q && q.queue.length > 0) return 'promptQueued';
+    const q = promptQueue.state(key);
+    if (q.running) return 'promptRunning';
+    if (q.queued > 0) return 'promptQueued';
     const sid = state.sessions[key];
     if (sid) {
       const startedAt = Number(v2TurnStartAt.get(sid));
@@ -11812,8 +11464,8 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
   function isConversationBusyV2(key, st) {
     if (st && st.pendingWakeTimer) return true;
     if (pendingWakeKeys.has(key)) return true;
-    const q = promptQueues.get(key);
-    if (q && (q.running || q.queue.length > 0)) return true;
+    const q = promptQueue.state(key);
+    if (q.running || q.queued > 0) return true;
     const sid = state.sessions[key];
     if (!sid) return false;
     // 回合只按「起始时间 + 租约」判忙，**不再**只看 Map 里有没有键：
@@ -12064,26 +11716,15 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
   }
 
   function drainPromptQueue(key, errorMsg) {
-    const entry = promptQueues.get(key);
-    if (!entry) return;
-    for (const item of entry.queue) item.reject(new Error(errorMsg));
-    entry.queue = [];
-    promptQueues.delete(key);
+    promptQueue.drain(key, errorMsg);
   }
 
   function drainAllPromptQueues(errorMsg) {
-    for (const [, entry] of promptQueues) {
-      for (const item of entry.queue) item.reject(new Error(errorMsg));
-    }
-    promptQueues.clear();
+    promptQueue.drainAll(errorMsg);
   }
 
   // QQ 消息 → DSH prompt
   /** 自己发的消息不要拿去记记忆。 */
-  function isSelfMessage(event) {
-    return String(event?.sender?.user_id ?? event?.user_id ?? '') === String(event?.self_id ?? '');
-  }
-
   async function handleIncoming(kind, id, event, cfg) {
     const key = convKey(kind, id);
     if (!modeAllowed(key, kind, id, cfg, currentMode)) {
@@ -12158,7 +11799,8 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
           // 真人不会只回被点名的话，偶尔会自己接一句。频率靠这两个旋钮控制：
           //   role.randomChimeProbability  每次判否时"接一句"的概率（默认 0.18）
           //   role.randomChimeMinGapMs     离上次发言至少隔多久才允许随机插话（默认 7 分钟）
-          const chimeP = Number(cfg.role?.randomChimeProbability ?? 0.18);
+          let chimeP = Number(cfg.role?.randomChimeProbability ?? 0.18);
+          try { const gi = cfg.role?.growth?.speak === false ? null : readInfluence(STATE_DIR); if (gi) chimeP = chanceWithGrowth(chimeP, gi.initiative); } catch {}
           const minGap = Number(cfg.role?.randomChimeMinGapMs ?? 7 * 60 * 1000);
           const gapOk = Date.now() - (lastBotReplyAt.get(key) ?? 0) > minGap;
           if (gapOk && chimeP > 0 && Math.random() < chimeP && plainText) {
@@ -12441,19 +12083,29 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     const ctxBlock = injection.context;
     const moodBlock = injection.mood;
     lastInboundForMemory.set(key, plainContent || textContent);
-    const promptText = (roleHint ? roleHint + '\n\n' : '')
-      + sessionTokenLine
-      + ctxBlock
-      + moodBlock
-      + emotionBlock
-      + memoryBlock
-      + recallBlock
-      + (groupContextBlock ? `【最近群聊】（供参考，不需要逐条回应）\n${groupContextBlock}\n\n【当前消息】` : '')
-      + (isOwner ? '【管理员】' : (isDeveloper ? '【开发者】' : ''))
-      + (kind === 'group'
-        ? `${event.sender?.card || event.sender?.nickname || String(event.user_id)}：${textContent}`
-        : textContent)
-      + mediaHintFor(key, messageRef, mediaList);
+    try { maybeLearnSlangFromQuestion(key, plainContent || textContent, event.sender?.nickname || event.user_id); } catch {}
+    const personaAnchor = cfg.role?.personaAnchor !== false ? buildPersonaAnchor() : '';
+    const guarded = guardIncomingText(textContent);
+    const promptContent = guarded.text;
+    if (guarded.truncated) log('[persona] 输入过长已截断：' + guarded.chars + ' 字 / ' + guarded.lines + ' 行');
+
+    const promptText = buildClosedAgentPrompt({
+      roleHint,
+      personaAnchor,
+      sessionTokenLine,
+      ctxBlock,
+      moodBlock,
+      emotionBlock,
+      memoryBlock,
+      recallBlock,
+      groupContextBlock,
+      isOwner,
+      isDeveloper,
+      kind,
+      senderName: event.sender?.card || event.sender?.nickname || String(event.user_id),
+      content: promptContent,
+      mediaHint: mediaHintFor(key, messageRef, mediaList)
+    });
 
     appendActivity(`${key} ${isOwner ? '管理员' : '群友'} ${event.sender?.nickname || event.user_id}：${textContent.slice(0, 80)}`);
 
@@ -12502,7 +12154,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
 
       // 启动阶段（观望）：触发条件 ① 明确对 AI 说（含引用机器人自己） ② 普通消息小概率
       // 指向性判断只基于当前消息自己的文字，不把引用原文算作“在叫 AI”
-      const direct = isDirectAddress(plainContent, event, kind) || quoteTargetIsSelf;
+      const direct = isDirectAddress(plainContent, event, kind, { selfNickname, mustReplyKeywords: cfg.social?.mustReplyKeywords ?? [] }) || quoteTargetIsSelf;
       const randomTrigger = Math.random() < Number(cfg.social?.triggerProbability ?? 0.15);
       if (!direct && !randomTrigger) {
         appendSummary(key, sender, textContent, plainContent, isOwner, mediaList, messageRef);

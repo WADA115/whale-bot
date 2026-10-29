@@ -74,11 +74,11 @@
       <input id="pass" type="password" placeholder="至少 6 位">
 
       <div class="row">
-        <button class="ghost" id="btn-register" onclick="doRegister()">注册</button>
-        <button class="primary" id="btn-login" onclick="doLogin()">登录</button>
+        <button class="ghost" id="btn-register" title="注册普通账户（会生成临时密码）" onclick="doRegister()">注册</button>
+        <button class="primary" id="btn-login" title="用用户名密码登录" onclick="doLogin()">登录</button>
       </div>
       <div style="text-align:center;margin-top:10px">
-        <button class="link" id="btn-reset" onclick="doReset()">忘记密码？重置</button>
+        <button class="link" id="btn-reset" title="忘记密码时按提示重置" onclick="doReset()">忘记密码？重置</button>
       </div>
       <div class="msg" id="msg-user"></div>
     </section>
@@ -92,7 +92,7 @@
       <input id="devkey" placeholder="12 位密钥" autocomplete="off">
 
       <div class="row" style="grid-template-columns:1fr">
-        <button class="primary" id="btn-dev" onclick="doDev()">进入</button>
+        <button class="primary" id="btn-dev" title="用开发者密钥登录（仅管理员）" onclick="doDev()">进入</button>
       </div>
       <div class="msg" id="msg-dev"></div>
     </section>

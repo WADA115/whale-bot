@@ -1,6 +1,11 @@
 import { scanEnv } from './src/env-scan.js';
 import { buildUpdateResult } from './src/update-check.js';
 import { verifyPlugin, BUILTIN_PLUGINS } from './src/plugin-verify.js';
+import { buildJudgePrompt, parseJudge, mergeJudge, buildDigest, ruleJudge, SCORE_KEEP } from './src/growth-judge.js';
+import { ensureDirs, readRaw, readKept, readDigest, overview as growthOverview, readRuns, writeRuns, pruneKept, readState, writeState, GROWTH_DIR,
+  readWeekKept, readTotals, writeSnapshot, listSnapshots, readSnapshot, readEvolutions, writeEvolutions } from './src/growth-store.js';
+import { evolveOnce, evaluateStage } from './src/growth-evolve.js';
+import { buildLocalNarrative, buildNarrativePrompt, parseNarrative, isValidNarrative } from './src/growth-narrative.js';
 
 // 小鲸鱼控制台：本地网页面板，统一管三个服务（SnowLuma / 桥接 / 语音识别）+ 守护。
 //
@@ -23,7 +28,7 @@ const PORT = Number(process.env.QQB_PANEL_PORT || 3200);
 // （不写死任何本机路径：开源版本里每个人装的位置都不一样）
 const CONFIG_SNAPSHOT = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8')); } catch { return {}; } })();
 const SNOWLUMA_DIR = CONFIG_SNAPSHOT.snowluma?.homeDir || '';
-const startAllScript = path.join(ROOT, 'start-all.ps1');
+const startAllScript = path.join(ROOT, 'scripts', 'ops', 'start-all.ps1');
 const SNOWLUMA_EXE = `${SNOWLUMA_DIR}\\node.exe`;
 const SNOWLUMA_UI_PORT = 5099;   // SnowLuma 自带 WebUI
 const SNOWLUMA_PROXY_PORT = 5098; // 面板的代理端口（剥掉防嵌套头）
@@ -440,12 +445,18 @@ function killWatchdog() {
   });
 }
 
+function runHiddenScript(scriptName, args = '') {
+  // 面板没有控制台，用 wscript 跑 VBS 才真正无窗口
+  const vbs = path.join(ROOT, 'scripts', 'ops', scriptName);
+  return spawnDetached('wscript.exe', [vbs, ...(args ? [args] : [])]);
+}
+
 async function start(target) {
   const env = {};
   const key = process.env.DEEPSEEK_API_KEY || '';
   if (key) env.DEEPSEEK_API_KEY = key;
 
-  if (target === 'snowluma' || target === 'asr') {
+  if (target === 'snowluma') {
     // 面板进程没有控制台，直接 spawn 这两个会失败（实测），统一委托给启动脚本
     spawnDetached('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', startAllScript]);
     log('委托启动脚本：' + target);
@@ -459,7 +470,7 @@ async function start(target) {
     return { ok: true, msg: '正在启动 SnowLuma（隐藏窗口）…' };
   }
   if (target === 'asr') {
-    spawnDetached('cmd.exe', ['/c', 'start', '""', '/min', path.join(ROOT, 'start-asr.bat')]);
+    spawnDetached('cmd.exe', ['/c', path.join(ROOT, 'scripts', 'ops', 'start-asr.bat'), '/silent']);
     log('启动 ASR');
     return { ok: true, msg: '正在启动语音识别…' };
   }
@@ -469,8 +480,8 @@ async function start(target) {
     return { ok: true, msg: '正在启动桥接…' };
   }
   if (target === 'watchdog') {
-    spawnDetached('cmd.exe', ['/c', 'start', '""', '/min', path.join(ROOT, '守护.bat')], { env });
-    log('启动守护');
+    runHiddenScript('start-watchdog.vbs');
+    log('启动守护（无窗口）');
     return { ok: true, msg: '正在启动守护…' };
   }
   if (target === 'all') {
@@ -728,6 +739,18 @@ const CFG_WHITELIST = {
   'role.reply.gapMinMs': (v) => {
     const n = Math.round(Number(v)); return n >= 200 && n <= 15000 ? n : null;
   },
+  'role.growth.enabled': (v) => (typeof v === 'boolean' ? v : null),
+  'role.personaAnchor': (v) => (typeof v === 'boolean' ? v : null),
+  'role.growth.narrative': (v) => (typeof v === 'boolean' ? v : null),
+  'role.growth.narrativeScope': (v) => (v === 'owner' || v === 'all' ? v : null),
+  'role.growth.narrativeReview': (v) => (typeof v === 'boolean' ? v : null),
+  'role.growth.speak': (v) => (typeof v === 'boolean' ? v : null),
+  'role.growth.keepScore': (v) => {
+    const n = Math.round(Number(v)); return n >= 0 && n <= 3 ? n : null;
+  },
+  'role.growth.callsPerDay': (v) => {
+    const n = Math.round(Number(v)); return n >= 1 && n <= 4 ? n : null;
+  },
   'role.weights.auto': (v) => (typeof v === 'boolean' ? v : null),
   'role.weights.memory.value': (v) => {
     const n = Math.round(Number(v)); return n >= 1 && n <= 5 ? n : null;
@@ -795,6 +818,17 @@ function collectConfig() {
       expression: cfg.role?.expression ?? {},
       emotion: cfg.role?.emotion ?? {},
       reply: cfg.role?.reply ?? {},
+      personaAnchor: cfg.role?.personaAnchor !== false,
+      growth: {
+        enabled: cfg.role?.growth?.enabled !== false,
+        model: cfg.role?.growth?.model || 'deepseek-flash',
+        callsPerDay: Math.max(1, Math.min(4, Number(cfg.role?.growth?.callsPerDay ?? 2))),
+        keepScore: Math.max(0, Math.min(3, Number(cfg.role?.growth?.keepScore ?? 2))),
+        speak: cfg.role?.growth?.speak !== false,
+        narrative: cfg.role?.growth?.narrative !== false,
+        narrativeScope: cfg.role?.growth?.narrativeScope === 'owner' ? 'owner' : 'all',
+        narrativeReview: cfg.role?.growth?.narrativeReview !== false
+      },
       weights: {
         auto: cfg.role?.weights?.auto !== false,
         memory: { value: Number(cfg.role?.weights?.memory?.value ?? 3) },
@@ -1043,6 +1077,175 @@ function send(res, code, body, type = 'application/json; charset=utf-8') {
   res.end(body);
 }
 
+async function runGrowthJudge({ manual = false } = {}) {
+  const cfg = readJson(CFG_PATH, {});
+  ensureDirs(ROOT);
+  const date = new Date().toISOString().slice(0, 10);
+  const raw = readRaw(ROOT, date);
+  const items = raw
+    .filter((x) => x && typeof x.text === 'string')
+    .filter((x) => ruleJudge(x.text).keep)
+    .slice(0, 80);
+
+  if (!items.length) {
+    return { ok: true, date, candidates: 0, kept: 0, fallback: false, msg: '今天还没有可压缩的候选' };
+  }
+
+  const model = String(cfg.role?.growth?.model || 'deepseek-flash');
+  const apiKey = String(cfg.webSearch?.apiKey || process.env.DEEPSEEK_API_KEY || '').trim();
+  let judged = [];
+  let fallback = false;
+
+  if (apiKey) {
+    for (let offset = 0; offset < items.length && offset < 80; offset += 40) {
+      const chunk = items.slice(offset, offset + 40);
+      try {
+        const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + apiKey },
+          body: JSON.stringify({
+            model,
+            temperature: 0.2,
+            max_tokens: 900,
+            messages: [
+              { role: 'system', content: '你只输出 JSON，不解释。' },
+              { role: 'user', content: buildJudgePrompt(chunk) }
+            ]
+          }),
+          signal: AbortSignal.timeout(30000)
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const json = await res.json();
+        const text = json?.choices?.[0]?.message?.content ?? '';
+        const parsed = parseJudge(text);
+        if (!parsed) throw new Error('返回不是合法 JSON');
+        judged.push(...parsed.map((x) => ({ ...x, i: x.i + offset })));
+      } catch (error) {
+        fallback = true;
+        log('成长：模型判断失败，改用规则兜底（' + String(error?.message ?? error).slice(0, 80) + '）');
+        break;
+      }
+    }
+  } else {
+    fallback = true;
+  }
+
+  if (!judged.length) {
+    judged = items.map((it, i) => {
+      const r = ruleJudge(it.text);
+      return { i, score: r.score, kind: r.kind, text: it.text };
+    });
+    fallback = true;
+  }
+
+  const keepScore = Math.max(0, Math.min(3, Number(cfg.role?.growth?.keepScore ?? SCORE_KEEP)));
+  const merged = mergeJudge(items, judged);
+  const kept = merged.filter((x) => x.score >= keepScore).map((x) => ({
+    ts: x.ts,
+    key: x.key,
+    score: x.score,
+    kind: x.kind,
+    text: String(x.text ?? '').slice(0, 300),
+    summary: String(x.summary ?? x.text ?? '').slice(0, 200)
+  }));
+
+  fs.writeFileSync(path.join(GROWTH_DIR(ROOT), 'kept', date + '.json'), JSON.stringify(kept, null, 2), 'utf8');
+  const digest = buildDigest(kept, date, keepScore);
+  fs.writeFileSync(path.join(GROWTH_DIR(ROOT), 'digests', date + '.json'), JSON.stringify(digest, null, 2), 'utf8');
+
+  const runs = readRuns(ROOT);
+  runs.runs = Array.isArray(runs.runs) ? runs.runs : [];
+  runs.runs.push({ at: Date.now(), date, candidates: items.length, kept: kept.length, fallback, manual });
+  runs.runs = runs.runs.slice(-50);
+  writeRuns(ROOT, runs);
+
+  try { pruneKept(ROOT); } catch {}
+
+  log('成长：' + date + ' 候选 ' + items.length + ' → 保留 ' + kept.length + (fallback ? '（规则兜底）' : ''));
+  return { ok: true, date, candidates: items.length, kept: kept.length, fallback };
+}
+
+async function runGrowthEvolve({ manual = false } = {}) {
+  const cfg = readJson(CFG_PATH, {});
+  if (!manual && cfg.role?.growth?.enabled === false) return { ok: false, skipped: true, msg: '成长已关闭' };
+  const state = readState(ROOT);
+  const week = readWeekKept(ROOT, 7);
+  const totals = readTotals(ROOT);
+  if (!totals.events) return { ok: true, skipped: true, msg: '还没有保留片段，先聊几天再来' };
+
+  const daysSinceFirst = totals.firstDate
+    ? Math.max(0, Math.floor((Date.now() - new Date(totals.firstDate + 'T00:00:00Z').getTime()) / 86400000))
+    : 0;
+  const result = evolveOnce(state, week, { daysSinceFirst, totalEvents: totals.events });
+  const snap = writeSnapshot(ROOT, state, { kind: 'pre-evolve', manual });
+  const next = {
+    ...state,
+    base: state.base ?? state.traits,
+    traits: result.traits,
+    needs: result.needs,
+    attachment: result.attachment,
+    influence: result.influence,
+    stage: result.stage,
+    updatedAt: Date.now()
+  };
+  try {
+    const summaries = Object.values(week).flat().slice(0, 8).map((x) => x.summary || x.text).filter(Boolean);
+    const nar = await generateNarrative({ state: next, signals: result.signals, summaries });
+    if (nar?.text) next.narrative = { text: nar.text, at: Date.now(), source: nar.source };
+  } catch {}
+  writeState(ROOT, next);
+
+  const evolutions = readEvolutions(ROOT);
+  evolutions.list = Array.isArray(evolutions.list) ? evolutions.list : [];
+  evolutions.list.push({
+    at: Date.now(),
+    date: new Date().toISOString().slice(0, 10),
+    signals: result.signals,
+    reasons: result.reasons,
+    advanced: result.advanced,
+    stage: result.stage.id,
+    snapshot: snap,
+    manual
+  });
+  evolutions.list = evolutions.list.slice(-50);
+  writeEvolutions(ROOT, evolutions);
+
+  log('成长演化：' + (result.advanced ? '进入 ' + result.stage.id + ' ' : '') + '变化 ' + result.reasons.length + ' 项');
+  return { ok: true, reasons: result.reasons, stage: result.stage, advanced: result.advanced, snapshot: snap };
+}
+
+async function generateNarrative({ state, signals, summaries }) {
+  const cfg = readJson(CFG_PATH, {});
+  if (cfg.role?.growth?.narrative === false) return null;
+  const apiKey = String(cfg.webSearch?.apiKey || process.env.DEEPSEEK_API_KEY || '').trim();
+  const model = String(cfg.role?.growth?.model || 'deepseek-flash');
+  const local = buildLocalNarrative({ stage: state?.stage?.id, signals, summaries });
+  if (!apiKey) return { text: local, source: 'template' };
+  try {
+    const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + apiKey },
+      body: JSON.stringify({
+        model,
+        temperature: 0.6,
+        max_tokens: 200,
+        messages: [
+          { role: 'system', content: '你只写简短自述，不解释。' },
+          { role: 'user', content: buildNarrativePrompt({ stage: state?.stage?.id, signals, summaries }) }
+        ]
+      }),
+      signal: AbortSignal.timeout(20000)
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    const text = parseNarrative(json?.choices?.[0]?.message?.content ?? '');
+    if (text && isValidNarrative(text)) return { text, source: 'model' };
+    return { text: local, source: 'template' };
+  } catch {
+    return { text: local, source: 'template' };
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
   try {
@@ -1089,7 +1292,7 @@ const server = http.createServer(async (req, res) => {
       if (mode === 'dev') {
         if (!devModeActivated()) {
           log('开发者登录被拒（模式未激活）:', maskIp(ip));
-          return send(res, 403, JSON.stringify({ ok: false, msg: '开发者模式未激活，需要用 开发者模式.ps1 激活' }));
+          return send(res, 403, JSON.stringify({ ok: false, msg: '开发者模式未激活，需要用 scripts/ops/开发者模式.ps1 激活' }));
         }
         const gate = devFailState.get(ip);
         if (gate && gate.until > Date.now()) {
@@ -1168,7 +1371,7 @@ const server = http.createServer(async (req, res) => {
       if (!acc) return send(res, 404, JSON.stringify({ ok: false, msg: '没有这个账户' }));
       // 只能在普通账户上生效：开发者走密钥，不参与重置
       if (acc.role === 'developer') {
-        return send(res, 403, JSON.stringify({ ok: false, msg: '开发者账户不能在这里重置，用「改密钥.ps1」' }));
+        return send(res, 403, JSON.stringify({ ok: false, msg: '开发者账户不能在这里重置，用「scripts/ops/改密钥.ps1」' }));
       }
       // 本机自用：允许直接重置（不再要求"先失败一次"）。
       // 仍然只对普通账户生效，开发者走密钥，不受影响。
@@ -1468,6 +1671,111 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ── 学习数据（只读/清空，普通账户看不到）────────────────────────────
+    // ── 成长（M1：只读概览 + 手动跑一次 + 开关）──────────────────────
+    if (url.pathname === '/api/growth/overview' && req.method === 'GET') {
+      const sess = currentSession(req);
+      if (!sess) return send(res, 401, JSON.stringify({ ok: false, msg: '需要登录' }));
+      try {
+        const cfg = readJson(CFG_PATH, {});
+        const data = growthOverview(ROOT);
+        const totals = readTotals(ROOT);
+        const daysSinceFirst = totals.firstDate
+          ? Math.max(0, Math.floor((Date.now() - new Date(totals.firstDate + 'T00:00:00Z').getTime()) / 86400000))
+          : 0;
+        const stageEval = evaluateStage(data.state, {}, { daysSinceFirst, totalEvents: totals.events });
+        data.totals = totals;
+        data.conditions = stageEval.conditions;
+        data.stageNext = stageEval.next;
+        data.stageProgress = stageEval.stage?.progress ?? 0;
+        data.snapshots = listSnapshots(ROOT).slice(0, 8);
+        data.evolutions = (readEvolutions(ROOT).list ?? []).slice(-5);
+        data.enabled = cfg.role?.growth?.enabled !== false;
+        data.speak = cfg.role?.growth?.speak !== false;
+        data.narrativeEnabled = cfg.role?.growth?.narrative !== false;
+        data.narrativeScope = cfg.role?.growth?.narrativeScope === 'owner' ? 'owner' : 'all';
+        data.narrativeReview = cfg.role?.growth?.narrativeReview !== false;
+        data.callsPerDay = Math.max(1, Math.min(4, Number(cfg.role?.growth?.callsPerDay ?? 2)));
+        data.isDeveloper = sess.role === 'developer';
+        return send(res, 200, JSON.stringify(data));
+      } catch (error) {
+        return send(res, 500, JSON.stringify({ ok: false, msg: String(error?.message ?? error) }));
+      }
+    }
+    if (url.pathname === '/api/growth/judge' && req.method === 'POST') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可手动压缩' }));
+      try {
+        const r = await runGrowthJudge({ manual: true });
+        return send(res, 200, JSON.stringify(r));
+      } catch (error) {
+        return send(res, 500, JSON.stringify({ ok: false, msg: String(error?.message ?? error) }));
+      }
+    }
+    if (url.pathname === '/api/growth/toggle' && req.method === 'POST') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可改' }));
+      const body = await readBody(req);
+      const result = saveConfig({ 'role.growth.enabled': body.enabled !== false });
+      return send(res, 200, JSON.stringify({ ok: true, ...result }));
+    }
+    if (url.pathname === '/api/growth/speak' && req.method === 'POST') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可改' }));
+      const body = await readBody(req);
+      const result = saveConfig({ 'role.growth.speak': body.enabled !== false });
+      return send(res, 200, JSON.stringify({ ok: true, ...result }));
+    }
+    if (url.pathname === '/api/growth/narrative/regenerate' && req.method === 'POST') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可改' }));
+      const state = readState(ROOT);
+      const week = readWeekKept(ROOT, 7);
+      const summaries = Object.values(week).flat().slice(0, 8).map((x) => x.summary || x.text).filter(Boolean);
+      const nar = await generateNarrative({ state, signals: {}, summaries });
+      if (!nar?.text) return send(res, 200, JSON.stringify({ ok: false, msg: '叙事已关闭' }));
+      state.narrative = { text: nar.text, at: Date.now(), source: nar.source };
+      writeState(ROOT, state);
+      return send(res, 200, JSON.stringify({ ok: true, ...state.narrative }));
+    }
+    if (url.pathname === '/api/growth/narrative' && req.method === 'POST') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可改' }));
+      const body = await readBody(req);
+      const text = parseNarrative(body.text);
+      if (!text || !isValidNarrative(text)) return send(res, 400, JSON.stringify({ ok: false, msg: '内容不合法（≤100 字，不要列表）' }));
+      const state = readState(ROOT);
+      state.narrative = { text, at: Date.now(), source: 'manual' };
+      writeState(ROOT, state);
+      return send(res, 200, JSON.stringify({ ok: true, ...state.narrative }));
+    }
+    if (url.pathname === '/api/growth/narrative/clear' && req.method === 'POST') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可改' }));
+      const state = readState(ROOT);
+      delete state.narrative;
+      writeState(ROOT, state);
+      return send(res, 200, JSON.stringify({ ok: true }));
+    }
+    if (url.pathname === '/api/growth/evolve' && req.method === 'POST') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可手动演化' }));
+      try {
+        const r = await runGrowthEvolve({ manual: true });
+        return send(res, 200, JSON.stringify(r));
+      } catch (error) {
+        return send(res, 500, JSON.stringify({ ok: false, msg: String(error?.message ?? error) }));
+      }
+    }
+    if (url.pathname === '/api/growth/rollback' && req.method === 'POST') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可回滚' }));
+      const body = await readBody(req);
+      const snap = readSnapshot(ROOT, body.id);
+      if (!snap) return send(res, 404, JSON.stringify({ ok: false, msg: '快照不存在' }));
+      writeState(ROOT, snap.state);
+      log('成长回滚：' + body.id);
+      return send(res, 200, JSON.stringify({ ok: true, msg: '已回滚到 ' + body.id }));
+    }
     if (url.pathname === '/api/learning' && req.method === 'GET') {
       const sess = currentSession(req);
       if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可看' }));
@@ -1484,6 +1792,41 @@ const server = http.createServer(async (req, res) => {
         edges: (data.edges || []).slice(0, 20),
         updatedAt: data.updatedAt || 0
       }));
+    }
+
+    if (url.pathname === '/api/slang' && req.method === 'GET') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可看' }));
+      let items = [];
+      try { items = JSON.parse(fs.readFileSync(path.join(STATE, 'slang.json'), 'utf8')); } catch {}
+      if (!Array.isArray(items)) items = [];
+      const confirmed = items.filter((x) => x.status === 'confirmed').length;
+      return send(res, 200, JSON.stringify({
+        ok: true,
+        total: items.length,
+        confirmed,
+        candidate: items.length - confirmed,
+        items: items.slice().sort((a, b) => (b.status === 'confirmed') - (a.status === 'confirmed')
+          || (Number(b.updatedAt ? Date.parse(b.updatedAt) : 0) - Number(a.updatedAt ? Date.parse(a.updatedAt) : 0))).slice(0, 100)
+      }));
+    }
+
+    if (url.pathname === '/api/slang/delete' && req.method === 'POST') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可操作' }));
+      const body = await readJson(req).catch(() => ({}));
+      const id = String(body.id || '');
+      if (!id) return send(res, 400, JSON.stringify({ ok: false, msg: '缺少 id' }));
+      try {
+        const file = path.join(STATE, 'slang.json');
+        const items = JSON.parse(fs.readFileSync(file, 'utf8'));
+        const next = (Array.isArray(items) ? items : []).filter((x) => x.id !== id);
+        fs.writeFileSync(file, JSON.stringify(next, null, 2), 'utf8');
+        log('黑话库删除：' + id);
+        return send(res, 200, JSON.stringify({ ok: true, msg: '已删除' }));
+      } catch (error) {
+        return send(res, 500, JSON.stringify({ ok: false, msg: error.message }));
+      }
     }
 
     if (url.pathname === '/api/learning/clear' && req.method === 'POST') {
@@ -1837,7 +2180,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, JSON.stringify(collectStats()));
     }
     if (url.pathname === '/api/help') {
-      const mdPath = path.join(ROOT, '使用手册.md');
+      const mdPath = path.join(ROOT, 'docs', '使用手册.md');
       let md = '';
       try { md = fs.readFileSync(mdPath, 'utf8'); } catch { md = '# 使用说明\n\n还没生成使用手册.md'; }
       return send(res, 200, JSON.stringify({ markdown: md }));
@@ -1901,6 +2244,33 @@ async function supervise() {
   }
 }
 setInterval(supervise, 30 * 1000);
+
+// 成长 M2：每 6 小时检查一次，距离上次演化超过 evolveEveryDays 天就演化
+setInterval(() => {
+  try {
+    const cfg = readJson(CFG_PATH, {});
+    if (cfg.role?.growth?.enabled === false) return;
+    const every = Math.max(1, Math.min(30, Number(cfg.role?.growth?.evolveEveryDays ?? 7)));
+    const list = readEvolutions(ROOT).list ?? [];
+    const last = list.length ? list[list.length - 1].at : 0;
+    if (Date.now() - last < every * 24 * 60 * 60 * 1000) return;
+    void runGrowthEvolve({ manual: false }).catch(() => {});
+  } catch {}
+}, 6 * 60 * 60 * 1000);
+
+// 成长：每天默认 2 次（12:00 / 23:00），错开判断；失败不影响任何服务
+setInterval(() => {
+  try {
+    const cfg = readJson(CFG_PATH, {});
+    if (cfg.role?.growth?.enabled === false) return;
+    const hour = new Date().getHours();
+    if (![12, 23].includes(hour)) return;
+    const runs = readRuns(ROOT).runs ?? [];
+    const last = runs.length ? new Date(runs[runs.length - 1].at).getTime() : 0;
+    if (Date.now() - last < 6 * 60 * 60 * 1000) return;
+    void runGrowthJudge({ manual: false }).catch(() => {});
+  } catch {}
+}, 30 * 60 * 1000);
 
 
 // ── SnowLuma WebUI 反代 ────────────────────────────────────────────────────

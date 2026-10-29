@@ -1,11 +1,11 @@
 {
-    "title":  "发散学习",
-    "version":  "1.0.0",
-    "description":  "从聊天里收集游戏 / 梗 / 网络用语等词条，并记录词与词的共现关系。只写 state/learning.json，不碰记忆库和设定库。",
-    "main":  "index.mjs",
-    "enabled":  false,
-    "risk":  "开启后学习内容会随聊天量增长；若后续接入模型做扩展，Tokens 使用量将无法预测。",
-    "hooks":  [
-                  "onInbound"
-              ]
+  "title": "发散学习",
+  "version": "1.0.0",
+  "description": "从聊天里收集游戏 / 梗 / 网络用语等词条，并记录词与词的共现关系。只写 state/learning.json，不碰记忆库和设定库。",
+  "main": "index.mjs",
+  "enabled": true,
+  "risk": "开启后学习内容会随聊天量增长；若后续接入模型做扩展，Tokens 使用量将无法预测。",
+  "hooks": [
+    "onInbound"
+  ]
 }

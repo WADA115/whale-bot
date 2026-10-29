@@ -69,9 +69,13 @@ QQ 消息 → SnowLuma（网关）→ 桥接 → DeepSeek → 回复
 
 设置页可查 GitHub Releases 有没有新版本（匿名 API、10 分钟缓存），只提示不自动替换。
 
+### 成长
+
+聊天片段去噪去重后，每天 2 次由模型筛选保留，每周演化一次特质/需求/依恋，阶段从「初识」到「默契」；演化前自动快照、可回滚，影响说话最多 ±20%，可一键关闭。每次演化还会生成一段「自我叙事」，默认所有人可见但群聊/他人私聊先过严格审核（秘密、号码、地址等整句丢弃）；可切「仅主人私聊」或关闭，面板可改可清。
+
 ### 守护
 
-桥接和语音识别都有看门狗：每 30 秒探一次（端口 + `/health`），挂了自动拉起；每个服务独立退避（60 秒一次、每小时最多 5 次），失败原因写 `state/logs/watchdog.log` 和 `asr.log`。
+桥接和语音识别都有看门狗：每 30 秒探一次（端口 + `/health`），挂了自动拉起；每个服务独立退避（60 秒一次、每小时最多 5 次），失败原因写 `state/logs/watchdog.log` 和 `asr.log`。守护默认无窗口，面板「概览 → 守护」可看状态、停止或重启。
 
 ### 情绪强度
 1~5 可调（理性 ↔ 感性），也能开「自动」：按心情、消息语气、是否技术提问、人格卡风格一起判断。开发者存全局配置，普通用户存在自己档案里，只影响各自会话。
@@ -101,8 +105,8 @@ QQ 消息 → SnowLuma（网关）→ 桥接 → DeepSeek → 回复
 2. `npm install`
 3. 复制 `config.example.json` → `config.json`，填 `ownerQQ` / `allow.*` / `snowluma.homeDir` / `dsh.baseUrl`
 4. 准备 `tools/`（Windows 版 ffmpeg、ASR 模型；没有也能跑，只是少几种能力）
-5. 语音识别单独起：`start-asr.bat`（自动找 Python 与 onnx 依赖；加 `/silent` 跑后台），或直接让 `守护.bat` 拉起
-6. 启动（Windows 直接双击 `静默启动.vbs`）：
+5. 语音识别单独起：`scripts/ops/start-asr.bat`（自动找 Python 与 onnx 依赖；加 `/silent` 跑后台），或直接让 `scripts/ops/守护.bat` 拉起
+6. 启动（Windows 直接双击根目录 `启动.bat`）：
    ```bash
    node app.js          # 面板 3200
    node src/bridge.js   # 桥接 3100
@@ -161,17 +165,17 @@ QQ 消息 → SnowLuma（网关）→ 桥接 → DeepSeek → 回复
 
 ```
 app.js              面板（3200）+ SnowLuma 反代（5098）
-src/bridge.js       桥接（0.7 MB，改动前先跑测试）
-src/gateway/        网关适配（snowluma / onebot）
-src/memory-core.js  记忆分层 + 多租户
-src/auto-memory.js  自主判断
-src/env-scan.js     环境检查
+启动.bat            根目录一键启动（调用 scripts/ops/start-hidden.vbs）
+src/                桥接、记忆、成长、表达、网关
+public/             面板与登录页
+plugins/            插件（learning / example / growth / DSH 预设）
 roles/              人格卡
-plugins/            插件（learning / example / qq-agent-presets / qq-mode-console）
 assets/icons/       外观图标（PNG + ICO，原创）
-tests/              19 个自动化测试 + 自检/文档检查脚本
+tests/              25 个自动化测试 + 自检/文档检查脚本
+docs/               使用手册、配置说明、部署、截图
+scripts/ops/        启动/守护/维护脚本
+scripts/            开发探针与历史测试脚本
 state/              账户、记忆、日志、备份（不进仓库）
-docs/               部署、网关适配、截图
 ```
 
 ---
@@ -255,6 +259,6 @@ MIT。保留上游 qq-bridge / QSH 的版权声明，并附本项目署名。
 
 ## 免责声明
 
-见 [免责声明.md](免责声明.md)：AI 内容不保证正确；聊天记录明文存本机；API 费用自付；第三方组件版权归各自作者；封号风险自担。
+见 [免责声明.md](docs/免责声明.md)：AI 内容不保证正确；聊天记录明文存本机；API 费用自付；第三方组件版权归各自作者；封号风险自担。
 
 > 个人项目，用爱发电：不代挂、不收费、不接定制。任何人以本项目名义收费或承诺服务，都与作者无关。

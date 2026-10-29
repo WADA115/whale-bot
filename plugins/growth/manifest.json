@@ -1,0 +1,11 @@
+{
+  "name": "growth",
+  "title": "成长",
+  "version": "0.1.0",
+  "description": "记录聊天里的高价值片段，压缩后用于人格演化（只收集，不改变说话）",
+  "main": "index.mjs",
+  "hooks": ["onInbound"],
+  "permissions": ["state"],
+  "enabled": true,
+  "risk": "只写 state/growth，不改记忆和人格"
+}

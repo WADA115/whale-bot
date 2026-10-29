@@ -129,13 +129,13 @@ const personas = await (await fetch(base + '/api/personas', { headers: { cookie:
 if ((personas.list || []).length >= 2) pass('人格卡列表：' + personas.list.map((x) => x.name).join(' / '));
 else fail('人格卡列表异常');
 
-for (const f of ['重置密码.ps1', 'CHANGELOG.md', '使用手册.md', 'README.md', '致谢.md', '开源打包.ps1', '迁移.ps1', '同步令牌.ps1']) {
+for (const f of ['scripts/ops/重置密码.ps1', 'CHANGELOG.md', 'docs/使用手册.md', 'README.md', 'docs/致谢.md', 'scripts/ops/开源打包.ps1', 'scripts/ops/迁移.ps1', 'scripts/ops/同步令牌.ps1']) {
   if (fs.existsSync(path.join(root, f))) pass(f + ' 存在');
   else fail(f + ' 缺失');
 }
 
 // 密码重置脚本编码（PowerShell 要 BOM）
-const ps1 = fs.readFileSync(path.join(root, '重置密码.ps1'));
+const ps1 = fs.readFileSync(path.join(root, 'scripts/ops/重置密码.ps1'));
 if (ps1[0] === 0xEF && ps1[1] === 0xBB && ps1[2] === 0xBF) pass('重置密码.ps1 带 BOM（中文不会乱码）');
 else fail('重置密码.ps1 缺 BOM');
 

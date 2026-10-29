@@ -9,7 +9,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 import fs from 'node:fs';
 
 const root = process.argv[2] || ROOT;
-const manual = fs.readFileSync(root + '/使用手册.md', 'utf8');
+const manual = fs.readFileSync(root + '/docs/使用手册.md', 'utf8');
 const guide = fs.readFileSync(root + '/public/guide.html', 'utf8');
 const login = fs.readFileSync(root + '/public/login.html', 'utf8');
 

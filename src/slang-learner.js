@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { truncateText } from './md-to-plain.js';
+import { clampConfidence, expiresAtFromNow, isExpired, shouldInject } from './slang-policy.js';
 
 export const SLANG_STATUS = Object.freeze({
   CANDIDATE: 'candidate',
@@ -68,7 +69,9 @@ export function normalizeSlangEntry(raw) {
     risk: clip(entry.risk, SLANG_FIELD_MAX),
     sources: Array.isArray(entry.sources) ? entry.sources.map((s) => clip(s, SLANG_FIELD_MAX)).filter(Boolean).slice(-10) : [],
     status,
-    source: entry.source === 'manual' ? 'manual' : 'ai',
+    source: entry.source === 'manual' ? 'manual' : (entry.source === 'auto_crawl' ? 'auto_crawl' : 'ai'),
+    confidence: clampConfidence(entry.confidence ?? 0),
+    expiresAt: typeof entry.expiresAt === 'string' ? entry.expiresAt : '',
     count: Math.max(0, Number(entry.count) || 0),
     // 证据同样要限长：它是从群聊消息里截来的原文，是文件膨胀的主要来源。
     evidence: Array.isArray(entry.evidence)
@@ -140,8 +143,10 @@ export function loadSlang(file, { onCorrupt } = {}) {
 }
 
 export function saveSlang(file, entries, { max = SLANG_MAX_ENTRIES } = {}) {
+  const now = Date.now();
+  const fresh = (Array.isArray(entries) ? entries : []).filter((e) => !isExpired(e, now));
   const { entries: capped, dropped } = capSlangEntries(
-    (Array.isArray(entries) ? entries : []).map(normalizeSlangEntry).filter((e) => e?.content),
+    fresh.map(normalizeSlangEntry).filter((e) => e?.content),
     max
   );
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -156,7 +161,7 @@ export function saveSlang(file, entries, { max = SLANG_MAX_ENTRIES } = {}) {
   return { entries: capped, dropped };
 }
 
-export function createSlangEntry({ content, meaning = '', usage = '', example = '', risk = '', sources = [], status = SLANG_STATUS.CANDIDATE, source = 'ai', evidence = [] } = {}) {
+export function createSlangEntry({ content, meaning = '', usage = '', example = '', risk = '', sources = [], status = SLANG_STATUS.CANDIDATE, source = 'ai', evidence = [], confidence = 0, expiresAt = '' } = {}) {
   return normalizeSlangEntry({
     content,
     meaning,
@@ -166,6 +171,8 @@ export function createSlangEntry({ content, meaning = '', usage = '', example = 
     sources,
     status,
     source,
+    confidence,
+    expiresAt,
     count: 1,
     evidence,
     createdAt: nowIso(),
@@ -212,9 +219,10 @@ export function mergeEvidence(current, incoming) {
   return merged.slice(-20);
 }
 
-export function buildSlangContext(entries, max = 8) {
+export function buildSlangContext(entries, max = 8, minConfidence = 0.5) {
+  const now = Date.now();
   const confirmed = (entries || [])
-    .filter((e) => e.status === SLANG_STATUS.CONFIRMED && e.content && e.meaning)
+    .filter((e) => e.content && e.meaning && shouldInject(e, { minConfidence, now }))
     .sort((a, b) => (b.count || 0) - (a.count || 0))
     .slice(0, Math.max(1, Math.min(30, Number(max) || 8)));
   if (!confirmed.length) return '';
@@ -273,6 +281,7 @@ ${list}
   "example": "一个自然短句示例（可选）",
   "risk": "是否有敏感/慎用风险（可选，没有就留空）",
   "sources": ["参考来源URL1", "参考来源URL2"],
+  "confidence": 0~1 的数字（对含义的把握，搜不到就 <0.3）,
   "confirmed": true 或 false
 }
 
@@ -377,6 +386,7 @@ export function parseResearchJson(text) {
       example: String(item.example ?? '').trim(),
       risk: String(item.risk ?? '').trim(),
       sources: Array.isArray(item.sources) ? item.sources.map((s) => String(s ?? '').trim()).filter(Boolean).slice(0, 10) : [],
+      confidence: clampConfidence(item.confidence ?? (item.confirmed === true ? 0.6 : 0)),
       confirmed: item.confirmed === true,
     }));
 }

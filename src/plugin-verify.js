@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 
 /** 内置插件白名单：不做验证（它们随版本发布，改由发布流程的测试覆盖）。 */
-export const BUILTIN_PLUGINS = ['example', 'learning', 'qq-agent-presets', 'qq-mode-console'];
+export const BUILTIN_PLUGINS = ['example', 'learning', 'growth', 'qq-agent-presets', 'qq-mode-console'];
 
 export const PERMISSION_LABELS = {
   fs: '读写本地文件',

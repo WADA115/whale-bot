@@ -1,7 +1,7 @@
 # QQ ↔ DeepSeek Harness Bridge (whale-bot)
 
 > A self-hosted QQ bot: chats, reads images, remembers you, and ships with a local control panel.
-> **Chinese docs are primary** — [README.md](README.md) · [FAQ.md](FAQ.md) · [使用手册.md](使用手册.md).
+> **Chinese docs are primary** — [README.md](README.md) · [FAQ.md](FAQ.md) · [使用手册.md](docs/使用手册.md).
 
 ---
 
@@ -32,6 +32,7 @@ Not an official product. It speaks through **your own QQ account**, and all data
 - **Kaomoji** — after the text, occasionally send a kaomoji (34 built in, chosen by keywords + mood); same cooldown family as stickers/faces, 5-minute separate cooldown, skipped when the reply already contains one.
 - **Speech-to-text that self-heals** — `start-asr.bat` auto-detects Python and the onnx runtime; the watchdog probes both the bridge (3100) and ASR (3199, port + `/health`) and restarts whichever is down with per-service backoff.
 - **Panel** — overview, settings, memory (5 tabs), plugins, appearance (6 original whale mascots with blink animation), environment check (read-only), help, changelog.
+- **Growth** — de-noised chat snippets are filtered twice a day by the model, a weekly pass evolves traits / needs / attachment and advances stages (stranger → familiar → close → tacit); every evolution is snapshotted and can be rolled back, and it shifts tone/memory/expression by at most ±20%, switchable off. Each evolution also writes a short self-narrative: visible everywhere by default but strictly reviewed before groups / other users see it (secrets, numbers, addresses dropped), with scope and review switches.
 - **Safety** — outbound content filter, tool guard for privileged actions, rate limits, IP redaction in logs.
 
 ---
@@ -51,7 +52,7 @@ Not an official product. It speaks through **your own QQ account**, and all data
 ```bash
 npm install
 cp config.example.json config.json     # fill ownerQQ / allow.* / snowluma.homeDir / dsh.baseUrl
-start-asr.bat /silent                  # ASR → :3199 (auto-detects Python + onnx deps)
+scripts/ops/start-asr.bat /silent   # ASR → :3199 (auto-detects Python + onnx deps)
 node app.js                            # panel  → http://127.0.0.1:3200
 node src/bridge.js                     # bridge → :3100
 ```
@@ -143,7 +144,7 @@ Three tests need extra conditions and skip themselves otherwise: two require an 
 
 Running automation on your own QQ account technically violates Tencent's terms of service. Rate limits, content filtering and no mass-messaging reduce — but cannot eliminate — the risk of account restrictions. See `免责声明.md`.
 
-Third-party components keep their own licenses; see [致谢.md](致谢.md) and [LICENSE](LICENSE).
+Third-party components keep their own licenses; see [致谢.md](docs/致谢.md) and [LICENSE](LICENSE).
 
 ## License
 

@@ -17,7 +17,7 @@ function pickBridgeDir() {
 
 const bridgeDir = process.argv[2] ? path.dirname(path.dirname(process.argv[2])) : pickBridgeDir();
 const panelPath = process.argv[2] || path.join(bridgeDir, 'public', 'panel.html');
-const mdPath = process.argv[3] || path.join(bridgeDir, '使用手册.md');
+const mdPath = process.argv[3] || path.join(bridgeDir, 'docs', '使用手册.md');
 const html = fs.readFileSync(panelPath, 'utf8');
 const md = fs.readFileSync(mdPath, 'utf8');
 

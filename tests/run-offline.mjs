@@ -34,6 +34,22 @@ const pick = [
   'test-plugin-verify.mjs',
   'test-plugin-host.mjs',
   'test-kaomoji.mjs',
+  'test-growth.mjs',
+  'test-growth-evolve.mjs',
+  'test-growth-influence.mjs',
+  'test-growth-narrative.mjs',
+  'test-narrative-guard.mjs',
+  'test-persona-guard.mjs',
+  'test-slang-policy.mjs',
+  'test-prompt-assemble.mjs',
+  'test-message-parse.mjs',
+  'test-send-pipeline.mjs',
+  'test-prompt-context.mjs',
+  'test-prompt-wake.mjs',
+  'test-plugin-runtime.mjs',
+  'test-wake-render.mjs',
+  'test-dsh-queue.mjs',
+  'test-dsh-deliver.mjs',
   'test-dsh-detect.mjs'
 ].filter((f) => fs.existsSync(path.join(dir, f)));
 
