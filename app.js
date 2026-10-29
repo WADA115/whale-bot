@@ -688,6 +688,11 @@ const CFG_WHITELIST = {
   'dsh.reasoningEffort': (v) => ['low', 'high', 'max'].includes(v) ? v : null,
   'webSearch.provider': (v) => ['auto', 'deepseek', 'bing'].includes(v) ? v : null,
   'role.groupTrigger': (v) => ['all', 'mention', 'smart'].includes(v) ? v : null,
+  'allow.groups': (v) => {
+    if (!Array.isArray(v)) return null;
+    const ids = [...new Set(v.map(String).map((x) => x.trim()).filter((x) => /^\d{5,20}$/.test(x)))];
+    return ids.slice(0, 200);
+  },
   'role.randomChimeProbability': (v) => {
     const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= 1 ? n : null;
   },
@@ -1460,6 +1465,50 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/start' && req.method === 'POST') {
       const target = url.searchParams.get('target') ?? 'all';
       return send(res, 200, JSON.stringify(await start(target)));
+    }
+
+    if (url.pathname === '/api/groups/trusted' && req.method === 'GET') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可看' }));
+      const cfg = readJson(CFG_PATH, {});
+      const groups = Array.isArray(cfg.allow?.groups) ? cfg.allow.groups.map(String) : [];
+      return send(res, 200, JSON.stringify({ ok: true, groups }));
+    }
+
+    if (url.pathname === '/api/groups/trusted' && req.method === 'POST') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可操作' }));
+      const body = await readBody(req);
+      const id = String(body.id ?? '').trim();
+      if (!/^\d{5,20}$/.test(id)) return send(res, 400, JSON.stringify({ ok: false, msg: '群号格式不对' }));
+      const cfg = readJson(CFG_PATH, {});
+      cfg.allow = cfg.allow ?? {};
+      const cur = new Set((Array.isArray(cfg.allow.groups) ? cfg.allow.groups : []).map(String));
+      if (body.op === 'remove') cur.delete(id); else cur.add(id);
+      cfg.allow.groups = [...cur];
+      const tmp = CFG_PATH + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      fs.renameSync(tmp, CFG_PATH);
+      log('受信群聊已更新：' + (body.op === 'remove' ? '移除 ' : '加入 ') + id);
+      return send(res, 200, JSON.stringify({ ok: true, groups: cfg.allow.groups, needsRestart: true, msg: '已写入 config.json，重启桥接后生效' }));
+    }
+
+    if (url.pathname === '/api/groups/recent' && req.method === 'GET') {
+      const sess = currentSession(req);
+      if (sess?.role !== 'developer') return send(res, 403, JSON.stringify({ ok: false, msg: '仅开发者可看' }));
+      const ids = new Set();
+      const add = (k) => { const m = /^group:(\d{5,20})$/.exec(String(k)); if (m) ids.add(m[1]); };
+      for (const f of ['sessions.json', 'social-v2.json', 'context.json']) {
+        try {
+          const data = readJson(path.join(STATE, f), {});
+          const maps = [data.sessions, data.conversations, data.convs];
+          for (const m of maps) if (m && typeof m === 'object') for (const k of Object.keys(m)) add(k);
+        } catch {}
+      }
+      const cfg = readJson(CFG_PATH, {});
+      const allow = new Set((Array.isArray(cfg.allow?.groups) ? cfg.allow.groups : []).map(String));
+      const recent = [...ids].filter((id) => !allow.has(id)).slice(0, 20);
+      return send(res, 200, JSON.stringify({ ok: true, recent }));
     }
 
     if (url.pathname === '/api/config' && req.method === 'GET') {

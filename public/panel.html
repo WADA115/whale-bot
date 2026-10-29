@@ -335,6 +335,14 @@
           <button class="mini" onclick="trustedAdd()" title="把 QQ 加入受信名单">加入</button>
           <span class="hint">名单里的人群里不用 @ 也回；审批仍只认管理员</span>
         </div></div>
+        <div class="field"><label>受信群聊</label><div class="val" style="flex-wrap:wrap;gap:6px">
+          <div id="trusted-groups-chips" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+          <input type="text" id="trusted-group-input" placeholder="群号，回车加入" style="max-width:180px">
+          <button class="mini" onclick="trustedGroupAdd()" title="把群号加入 allow.groups">加入</button>
+          <button class="mini" onclick="loadRecentGroups()" title="从最近会话里找群">最近群聊</button>
+          <span class="hint" id="trusted-group-hint">allow.groups：名单外的群一律不理；改完重启桥接生效</span>
+          <div id="recent-groups" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></div>
+        </div></div>
         <div class="field"><label>随机插话</label><div class="val"><input type="range" id="cfg-chime" min="0" max="100" step="1"><span class="num" id="chime-num">18%</span></div></div>
         <div class="field"><label>人设锚点</label><div class="val"><label class="sw"><input type="checkbox" id="cfg-anchor"> 长代码/长文本也不跑偏</label></div></div>
         <div class="field"><label>表达层</label><div class="val"><select id="cfg-expr"><option value="1">开（自己补发表情）</option><option value="0">关</option></select></div></div>
@@ -608,7 +616,7 @@
   </div>
 
   <footer>
-    小鲸鱼控制台 · <span id=fw-ver>v0.5.4</span> · 本地 3200 端口 · 数据每 3 秒刷新 ·
+    小鲸鱼控制台 · <span id=fw-ver>v0.5.5</span> · 本地 3200 端口 · 数据每 3 秒刷新 ·
     <a href="#" onclick="openDisclaimer();return false;">免责声明</a>
   </footer>
 </div>
@@ -1033,6 +1041,8 @@ async function loadSettings() {
   $('cfg-persona').addEventListener('change', (e) => loadPersonaText(e.target.value));
   $('cfg-trigger').value = cfg.role.groupTrigger;
   renderTrusted();
+  loadTrustedGroups();
+  $('trusted-group-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); trustedGroupAdd(); } });
   $('trusted-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); trustedAdd(); } });
   const chime = Math.round((cfg.role.chime || 0) * 100);
   $('cfg-chime').value = chime; $('chime-num').textContent = chime + '%';
@@ -1857,6 +1867,57 @@ function renderTrusted() {
   wrap.innerHTML = list.map((qq) => `<span class="chip" style="display:inline-flex;align-items:center;gap:6px">${esc2(qq)}
     <b style="cursor:pointer;color:#c9574a" onclick="trustedRemove('${esc2(qq)}')">×</b></span>`).join('')
     || '<span class="hint">还没加人</span>';
+}
+
+let trustedGroups = [];
+
+async function loadTrustedGroups() {
+  try {
+    const d = await (await fetch('/api/groups/trusted')).json();
+    if (!d.ok) return;
+    trustedGroups = d.groups || [];
+    renderTrustedGroups();
+    loadRecentGroups();
+  } catch {}
+}
+
+function renderTrustedGroups() {
+  const box = $('trusted-groups-chips');
+  if (!box) return;
+  box.innerHTML = trustedGroups.length
+    ? trustedGroups.map((id) => '<span class="chip">' + esc(id) + ' <b style="cursor:pointer;color:#c9574a" onclick="trustedGroupChange(\'remove\',\'' + esc(id) + '\')">×</b></span>').join('')
+    : '<span class="hint">还没有受信群聊</span>';
+}
+
+async function trustedGroupChange(op, id) {
+  const r = await (await fetch('/api/groups/trusted', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ op, id })
+  })).json();
+  if (!r.ok) { alert(r.msg || '操作失败'); return; }
+  trustedGroups = r.groups || [];
+  renderTrustedGroups();
+  $('trusted-group-hint').innerHTML = (r.msg || '已更新，重启桥接后生效')
+    + ' <button class="mini" onclick="restartBridge()" title="重启桥接让 allow.groups 生效">重启桥接</button>';
+  loadRecentGroups();
+}
+
+function trustedGroupAdd(id) {
+  const input = $('trusted-group-input');
+  const gid = String(id || input.value || '').trim();
+  if (!/^\d{5,20}$/.test(gid)) { input.focus(); return; }
+  trustedGroupChange('add', gid).then(() => { if (!id) input.value = ''; });
+}
+
+async function loadRecentGroups() {
+  const box = $('recent-groups');
+  if (!box) return;
+  try {
+    const d = await (await fetch('/api/groups/recent')).json();
+    if (!d.ok) { box.innerHTML = ''; return; }
+    box.innerHTML = (d.recent || []).length
+      ? '<span class="hint">最近群聊：</span>' + d.recent.map((id) => '<button class="mini" onclick="trustedGroupAdd(\'' + esc(id) + '\')" title="一键加入受信群聊">' + esc(id) + ' 加入</button>').join('')
+      : '<span class="hint">最近没有未受信的群</span>';
+  } catch { box.innerHTML = ''; }
 }
 
 function trustedAdd() {

@@ -1,6 +1,6 @@
 {
   "name": "deepseek-qq-bot",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "private": true,
   "license": "MIT",
   "description": "QQ bot with layered memory, per-user isolation, plugin system and a local control panel",
