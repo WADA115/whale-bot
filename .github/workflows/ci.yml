@@ -35,6 +35,9 @@ jobs:
       - name: 离线测试（不依赖面板和网络）
         run: node tests/run-offline.mjs
 
+      - name: 测试数量一致性（README 生成标记）
+        run: node scripts/gen-stats.mjs --check
+
       - name: 文档一致性
         run: node tests/check-docs.mjs .
 

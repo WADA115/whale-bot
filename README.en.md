@@ -24,16 +24,16 @@ Not an official product. It speaks through **your own QQ account**, and all data
 - **Chat** — private chats always answered; group chats decide whether they're being addressed (smart / mention-only / always). Random interjections with cooldown. Long replies split into 2–5 bubbles.
 - **Understands media** — images read directly, GIFs sampled, videos sampled + audio transcribed, voice transcribed locally (audio never leaves the machine).
 - **Memory (5 layers, per-user)** — settings / long-term / short-term (72 h decay, promoted after 2 hits) / keywords / summaries (auto-compressed past 24 turns). Developers keep `state/memory.json`; every normal user gets `state/profiles/<user>/memory.json`.
-- **Memory isolation** — a user's store can never read another user's, and normal users cannot see the developer's memory.
-- **Auto memory** — a local heuristic decides whether a message is worth remembering (identity/preference → long-term, recent facts → short-term). No model call, no tokens, never touches persona cards or settings.
+- **Memory isolation** — profiles are scoped by account, but all accounts share the same process and `state/` directory; isolation relies on auth + path checks, not an OS sandbox. Normal users cannot read the developer's memory.
+- **Auto memory** — a local heuristic decides whether a message is worth remembering (identity/preference → long-term, recent facts → short-term). No model call, but it is heuristic and can misremember or miss; it never touches persona cards or settings.
 - **Persona cards** — markdown cards in `roles/`, editable in the panel; saving syncs them into the memory "settings" layer.
-- **Plugins** — `plugins/<name>/` with `manifest.json` + `index.mjs`, hooks `onInbound / onReply / onMemory`. New plugins must pass manifest validation, static scanning and a sandboxed dry run before they can be enabled; at runtime each plugin runs in its own child process (3 s per hook), so a crash or infinite loop only takes down that plugin. A learning plugin ships disabled by default.
+- **Plugins** — `plugins/<name>/` with `manifest.json` + `index.mjs`, hooks `onInbound / onReply / onMemory`. New plugins must pass manifest validation, heuristic static scanning and a child-process startup check before they can be enabled (the scan can be bypassed and is not a sandbox); at runtime each plugin runs in its own child process (3 s per hook), so a crash or infinite loop only takes down that plugin. A learning plugin ships disabled by default.
 - **Memory / emotion weights** — 1–5 each, auto-tuned from the persona card, settings and context; memory weight scales how much context is injected (relevant items only, never the whole store). Manual overrides are developer-only.
 - **Kaomoji** — after the text, occasionally send a kaomoji (34 built in, chosen by keywords + mood); same cooldown family as stickers/faces, 5-minute separate cooldown, skipped when the reply already contains one.
 - **Speech-to-text that self-heals** — `start-asr.bat` auto-detects Python and the onnx runtime; the watchdog probes both the bridge (3100) and ASR (3199, port + `/health`) and restarts whichever is down with per-service backoff.
-- **Panel** — overview, settings, memory (5 tabs), plugins, appearance (6 original whale mascots with blink animation), environment check (read-only), help, changelog.
+- **Panel** — overview, settings, memory (5 tabs), plugins, appearance (6 whale mascots with blink animation), environment check (read-only), help, changelog.
 - **Growth** — de-noised chat snippets are filtered twice a day by the model, a weekly pass evolves traits / needs / attachment and advances stages (stranger → familiar → close → tacit); every evolution is snapshotted and can be rolled back, and it shifts tone/memory/expression by at most ±20%, switchable off. Each evolution also writes a short self-narrative: visible everywhere by default but strictly reviewed before groups / other users see it (secrets, numbers, addresses dropped), with scope and review switches.
-- **Safety** — outbound content filter, tool guard for privileged actions, rate limits, IP redaction in logs.
+- **Safety** — outbound heuristic path/credential filter (not a classifier), tool guard for privileged actions, rate limits, IP redaction in logs.
 
 ---
 
@@ -120,18 +120,21 @@ state/              accounts, memory, logs, backups (gitignored)
 ## Testing
 
 ```bash
-node tests/run-tests.mjs      # all 19
 node tests/run-offline.mjs    # CI-safe subset (no panel, no network)
 ```
 
-Three tests need extra conditions and skip themselves otherwise: two require an API key, one is end-to-end (`QQB_E2E=1` plus a running panel).
+<!-- STATS:OFFLINE:START -->
+Offline tests: 38/38 passing (CI-generated)
+<!-- STATS:OFFLINE:END -->
+
+Tests that need extra conditions (API key, `QQB_E2E=1` + running panel) skip themselves instead of failing; the full suite runs in the maintainer environment, so its count is not hard-coded here.
 
 ---
 
 ## Security
 
 - Panel binds `127.0.0.1` only; unauthenticated visitors see the login page and guide only.
-- Passwords: scrypt + random salt. Login rate limits, exponential backoff for the developer key.
+- Passwords: scrypt + random salt (N=16384, r=8, p=1, keylen=32). Login rate limits, exponential backoff for the developer key.
 - Developer key never lives in code: env → `state/dev-key.txt` → generated on first run.
 - Normal accounts get 403 on global config / memory / local management.
 - Private vulnerability reporting is enabled — see [SECURITY.md](SECURITY.md).

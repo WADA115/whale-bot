@@ -1,4 +1,5 @@
 import { scanEnv } from './src/env-scan.js';
+import { validateUserName, userKey, profileFileName } from './src/user-id.js';
 import { buildUpdateResult } from './src/update-check.js';
 import { verifyPlugin, BUILTIN_PLUGINS } from './src/plugin-verify.js';
 import { buildJudgePrompt, parseJudge, mergeJudge, buildDigest, ruleJudge, SCORE_KEEP } from './src/growth-judge.js';
@@ -271,16 +272,14 @@ const LIMITS = { nickMin: 2, nickMax: 24, passMin: 6, passMax: 128, personaBytes
 
 function createAccount(user, password, role = 'user') {
   const finalRole = role === 'developer' ? 'user' : role;
-  const rawName = String(user ?? '').trim();
-  if (rawName.length > LIMITS.nickMax) return { ok: false, msg: '用户名最多 ' + LIMITS.nickMax + ' 个字符' };
-  const name = rawName.slice(0, LIMITS.nickMax);
-  if (name.length < LIMITS.nickMin) return { ok: false, msg: '用户名至少 ' + LIMITS.nickMin + ' 个字符' };
-  if (name.length > LIMITS.nickMax) return { ok: false, msg: '用户名最多 ' + LIMITS.nickMax + ' 个字符' };
+  const validated = validateUserName(user);
+  if (!validated.ok) return validated;
+  const name = validated.name;
   const pw = String(password ?? '');
   if (pw.length < LIMITS.passMin) return { ok: false, msg: '密码至少 ' + LIMITS.passMin + ' 位' };
   if (pw.length > LIMITS.passMax) return { ok: false, msg: '密码最多 ' + LIMITS.passMax + ' 位' };
   const auth = readAuth() ?? { accounts: [] };
-  if (auth.accounts.some((a) => a.user === name)) return { ok: false, msg: '这个用户名已经存在了' };
+  if (auth.accounts.some((a) => userKey(a.user) === validated.key)) return { ok: false, msg: '这个用户名已经存在了' };
   // 开发者现在靠密钥登录，不再有开发者账户；这里创建的一律是普通账户
   const salt = crypto.randomBytes(16).toString('hex');
   auth.accounts.push({ user: name, salt, hash: hashPassword(password, salt), role: finalRole, createdAt: Date.now() });
@@ -293,7 +292,7 @@ function createAccount(user, password, role = 'user') {
 function verifyAccount(user, password) {
   const auth = readAuth();
   if (!auth) return null;
-  const acc = auth.accounts.find((a) => a.user === String(user ?? '').trim());
+  const acc = auth.accounts.find((a) => userKey(a.user) === userKey(user));
   if (!acc) return null;
   const got = Buffer.from(hashPassword(password, acc.salt), 'hex');
   const want = Buffer.from(acc.hash, 'hex');
@@ -304,7 +303,7 @@ function verifyAccount(user, password) {
 function deleteAccount(name) {
   const auth = readAuth();
   if (!auth) return { ok: false, msg: '还没有账户' };
-  const idx = auth.accounts.findIndex((a) => a.user === name);
+  const idx = auth.accounts.findIndex((a) => userKey(a.user) === userKey(name));
   if (idx < 0) return { ok: false, msg: '找不到这个账户' };
   if (auth.accounts[idx].role === 'developer' && auth.accounts.filter((a) => a.role === 'developer').length <= 1) {
     return { ok: false, msg: '至少要保留一个开发者账户' };
@@ -534,8 +533,10 @@ const PROFILE_DEFAULT = {
 };
 
 function profilePath(user) {
-  const safe = String(user ?? '').replace(/[^\w\u4e00-\u9fa5-]/g, '');
-  return path.join(PROFILE_DIR, safe + '.json');
+  const file = path.join(PROFILE_DIR, profileFileName(user));
+  const base = path.resolve(PROFILE_DIR) + path.sep;
+  if (!path.resolve(file).startsWith(base)) throw new Error('非法用户名');
+  return file;
 }
 
 function readProfile(user) {
@@ -1367,7 +1368,7 @@ const server = http.createServer(async (req, res) => {
       const user = String(body.user ?? '').trim();
       if (!user) return send(res, 400, JSON.stringify({ ok: false, msg: '要填用户名' }));
       const auth = readAuth();
-      const acc = auth?.accounts?.find((a) => a.user === user);
+      const acc = auth?.accounts?.find((a) => userKey(a.user) === userKey(user));
       if (!acc) return send(res, 404, JSON.stringify({ ok: false, msg: '没有这个账户' }));
       // 只能在普通账户上生效：开发者走密钥，不参与重置
       if (acc.role === 'developer') {
@@ -1536,7 +1537,7 @@ const server = http.createServer(async (req, res) => {
       // 重置密码只看账户，不要求档案存在（防死锁：管理员永远能把人放进来）
       if (body.op === 'reset-password') {
         const auth = readAuth();
-        const acc = auth?.accounts?.find((a) => a.user === user);
+        const acc = auth?.accounts?.find((a) => userKey(a.user) === userKey(user));
         if (!acc) return send(res, 404, JSON.stringify({ ok: false, msg: '账户不存在' }));
         const salt = crypto.randomBytes(16).toString('hex');
         acc.salt = salt;
