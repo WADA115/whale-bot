@@ -42,6 +42,7 @@ import { reviewNarrative } from './narrative-guard.js';
 import { guardIncomingText, buildPersonaAnchor } from './persona-guard.js';
 import { buildClosedAgentPrompt } from './prompt/assemble.js';
 import { canChime, rollChime } from './chime.js';
+import { parseClassifyAnswer } from './group-classify.js';
 import { SILENT_MARKER, SPACE_SPLIT_HINT, DIRECTION_HINT, buildBatchPromptText, buildProbePromptText, buildActiveExitPromptText, buildProactivePromptText } from './prompt/context.js';
 import { selfIdentityText, buildWakeReasonSuffix } from './prompt/wake.js';
 import { renderWakePromptV2 } from './prompt/wake-render.js';
@@ -2102,7 +2103,7 @@ const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制
             { role: 'user', content: user }
           ],
           // flash 是推理模型：额度给小了会全花在 reasoning 上、content 直接为空（实测 200 才稳定出字）
-          max_tokens: 300,
+          max_tokens: 800,
           temperature: 0
         }),
         signal: AbortSignal.timeout(15000)
@@ -2110,14 +2111,7 @@ const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制
       if (!res.ok) return { addressed: false, reason: `http ${res.status}` };
       const json = await res.json().catch(() => ({}));
       const msg = json?.choices?.[0]?.message ?? {};
-      let answer = String(msg.content ?? '').trim();
-      if (!answer) {
-        // 兜底：content 空时从 reasoning 里捞最后的 是/否
-        const reasoning = String(msg.reasoning_content ?? '');
-        const hit = reasoning.match(/(?:回答|输出|结论|答案)[^是no]{0,12}(是|否)/);
-        answer = hit ? hit[1] : '';
-      }
-      return { addressed: /^是/.test(answer) || answer === '是', reason: answer.slice(0, 6) || 'empty' };
+      return parseClassifyAnswer(String(msg.content ?? ''), String(msg.reasoning_content ?? ''));
     } catch (error) {
       return { addressed: false, reason: String(error?.message ?? error).slice(0, 30) };
     }

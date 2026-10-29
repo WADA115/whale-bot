@@ -124,7 +124,7 @@ node tests/run-offline.mjs    # CI-safe subset (no panel, no network)
 ```
 
 <!-- STATS:OFFLINE:START -->
-Offline tests: 39/39 passing (CI-generated)
+Offline tests: 40/40 passing (CI-generated)
 <!-- STATS:OFFLINE:END -->
 
 Tests that need extra conditions (API key, `QQB_E2E=1` + running panel) skip themselves instead of failing; the full suite runs in the maintainer environment, so its count is not hard-coded here.
