@@ -34,6 +34,47 @@ export function appendTurnLog(entry, { dir, now = new Date() } = {}) {
       }
       : null,
     action: String(entry.action ?? ''),
+    contract: entry.contract && typeof entry.contract === 'object'
+      ? {
+        action: String(entry.contract.action ?? ''),
+        interject: entry.contract.interject === true,
+        replyTo: String(entry.contract.replyTo ?? ''),
+        reason: String(entry.contract.reason ?? '').slice(0, 80)
+      }
+      : null,
+    shadow: entry.shadow && typeof entry.shadow === 'object'
+      ? {
+        candidate: entry.shadow.candidate === true,
+        reason: String(entry.shadow.reason ?? '').slice(0, 40),
+        source: String(entry.shadow.source ?? '').slice(0, 20)
+      }
+      : null,
+    thought: entry.thought && typeof entry.thought === 'object'
+      ? {
+        shouldReply: entry.thought.shouldReply === true,
+        target: String(entry.thought.target ?? '').slice(0, 40),
+        intent: String(entry.thought.intent ?? '').slice(0, 30),
+        keyPoints: Array.isArray(entry.thought.keyPoints) ? entry.thought.keyPoints.slice(0, 4).map(String).map((x) => x.slice(0, 120)) : [],
+        constraints: Array.isArray(entry.thought.constraints) ? entry.thought.constraints.slice(0, 4).map(String).map((x) => x.slice(0, 80)) : [],
+        confidence: Math.max(0, Math.min(1, Number(entry.thought.confidence) || 0))
+      }
+      : null,
+    spoken: entry.spoken && typeof entry.spoken === 'object'
+      ? {
+        messages: Array.isArray(entry.spoken.messages) ? entry.spoken.messages.slice(0, 5).map(String).map((x) => x.slice(0, 160)) : [],
+        replyTo: String(entry.spoken.replyTo ?? ''),
+        delayMs: Array.isArray(entry.spoken.delayMs) ? entry.spoken.delayMs.slice(0, 5).map((n) => Math.max(0, Number(n) || 0)) : []
+      }
+      : null,
+    prediction: entry.prediction && typeof entry.prediction === 'object'
+      ? {
+        needThink: entry.prediction.needThink === true,
+        difficulty: String(entry.prediction.difficulty ?? '').slice(0, 20),
+        intent: String(entry.prediction.intent ?? '').slice(0, 30),
+        confidence: Math.max(0, Math.min(1, Number(entry.prediction.confidence) || 0)),
+        route: String(entry.prediction.route ?? '').slice(0, 10)
+      }
+      : null,
     reason: String(entry.reason ?? '').slice(0, 80)
   };
   fs.appendFileSync(turnLogFile(dir, now), JSON.stringify(record) + '\n', 'utf8');

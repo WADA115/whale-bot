@@ -32,8 +32,14 @@ jobs:
           if ($bad -gt 0) { throw "$bad 个文件语法不通过" }
           Write-Host "✅ 语法检查通过"
 
+      - name: 依赖安装（锁文件，不跑安装脚本）
+        run: npm ci --ignore-scripts
+
       - name: 离线测试（不依赖面板和网络）
         run: node tests/run-offline.mjs
+
+      - name: 依赖报告一致
+        run: node scripts/deps-report.mjs --check
 
       - name: 测试数量一致性（README 生成标记）
         run: node scripts/gen-stats.mjs --check

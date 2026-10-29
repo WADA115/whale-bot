@@ -45,7 +45,14 @@ import { canChime, rollChime } from './chime.js';
 import { parseClassifyAnswer } from './group-classify.js';
 import { formatRecentLine, formatCurrentLine } from './group-history.js';
 import { appendTurnLog } from './dialogue/turn-log.js';
-import { SILENT_MARKER, SPACE_SPLIT_HINT, DIRECTION_HINT, buildBatchPromptText, buildProbePromptText, buildActiveExitPromptText, buildProactivePromptText } from './prompt/context.js';
+import { appendEvent } from './dialogue/events.js';
+import { orchestrateDialog } from './orchestrator/index.js';
+import { callChat } from './dialogue/model.js';
+import { createThreadStore } from './dialogue/thread-store.js';
+import { createExecutionGateway } from './execution/gateway.js';
+import { createTransport } from './execution/transport.js';
+import { createSecurityNotifier } from './execution/security.js';
+import { SILENT_MARKER, SPACE_SPLIT_HINT, DIRECTION_HINT, buildBatchPromptText, buildProbePromptText, buildActiveExitPromptText } from './prompt/context.js';
 import { selfIdentityText, buildWakeReasonSuffix } from './prompt/wake.js';
 import { renderWakePromptV2 } from './prompt/wake-render.js';
 import { sanitizeMediaSummary, extractMediaFromSegments, isDirectedAtAi, isDirectAddress, isMustReplyText, isSelfMessage } from './message/parse.js';
@@ -99,6 +106,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const STATE_DIR = path.join(ROOT, 'state');
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
+const DIALOGUE_DIR = path.join(STATE_DIR, 'dialogue');
+const threadStore = createThreadStore({ dir: DIALOGUE_DIR });
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 // ── 账户档案：state/profiles/<user>.json，按 qq 绑定。只影响绑定的人。──
 const PROFILE_DIR = path.join(STATE_DIR, 'profiles');
@@ -843,6 +852,9 @@ function loadConfig() {
       interceptNotify: true,
       ...(file.security ?? {})
     },
+    dialogue: {
+      ...(file.dialogue ?? {})
+    },
     slang: {
       enabled: true,
       extractMinMessages: 10,
@@ -1235,6 +1247,7 @@ function consolePortInUse() {
 
 function acquireLock() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
+  try { threadStore.loadRecent(); } catch {}
   // 原子创建锁文件：把 PID 一次性写入（flag 'wx'），避免“先建空文件再写 PID”的窗口被第二个进程当作过期锁偷走。
   const tryCreate = () => {
     try {
@@ -2067,6 +2080,43 @@ const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制
     groupRecentLines.set(String(groupId), buf);
   }
 
+  function dialogueAsks(cfg) {
+    const smart = cfg.role?.smartTrigger ?? {};
+    let searchKey = '';
+    try { searchKey = String(resolveSearchApiKey(loadSearchConfig(ROOT))?.key ?? ''); } catch {}
+    const apiKey = smart.apiKey || searchKey || process.env.DEEPSEEK_API_KEY || '';
+    if (!apiKey) return null;
+    const dshBase = String(cfg.dsh?.baseUrl || '').replace(/\/+$/, '');
+    const baseURL = String(smart.baseURL || dshBase || 'https://api.deepseek.com/v1').replace(/\/+$/, '');
+    const gateModel = smart.model || 'deepseek-flash';
+    const thinkModel = cfg.dialogue?.thinker?.model || 'deepseek-v4-pro';
+    const speakModel = cfg.dialogue?.speaker?.model || 'deepseek-flash';
+    return {
+      gate: ({ system, user }) => callChat({ baseURL, apiKey, model: gateModel, system, user, maxTokens: 300 }),
+      thinker: ({ system, user }) => callChat({
+        baseURL, apiKey, model: thinkModel, system, user,
+        maxTokens: Number(cfg.dialogue?.thinker?.maxTokens) || 700,
+        timeoutMs: Number(cfg.dialogue?.thinker?.timeoutMs) || 20000
+      }),
+      speaker: ({ system, user }) => callChat({
+        baseURL, apiKey, model: speakModel, system, user,
+        maxTokens: Number(cfg.dialogue?.speaker?.maxTokens) || 400,
+        temperature: Number(cfg.dialogue?.speaker?.temperature) || 0.8,
+        timeoutMs: Number(cfg.dialogue?.speaker?.timeoutMs) || 15000
+      }),
+      vision: ({ system, user, images }) => callChat({
+        baseURL,
+        apiKey,
+        model: cfg.dsh?.model || 'deepseek-flash',
+        system,
+        user,
+        images: Array.isArray(images) ? images : [],
+        maxTokens: 400,
+        timeoutMs: 20000
+      })
+    };
+  }
+
   async function classifyGroupMessage({ text, senderName, historyLines, cfg, atNames = [] }) {
     const smart = cfg.role?.smartTrigger ?? {};
     // config.json 的 webSearch 段要单独加载（loadConfig 不带这段）。
@@ -2644,7 +2694,7 @@ const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制
       if (plan.kaomoji) {
         const kao = pickKaomoji({ text, mood, exclude: state.recentKaomoji ?? [] });
         if (kao) {
-          await sendToQQ(key, kao);
+          await sendSystem(key, kao, 'kaomoji');
           const recent = [...(state.recentKaomoji ?? []), kao].slice(-8);
           extraState.set(key, { ...state, lastKaomojiAt: Date.now(), recentKaomoji: recent });
           log("[express] 补发颜文字 " + kao + "（心情 " + mood + "）");
@@ -3351,6 +3401,8 @@ const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制
     }
   }
   const collectors = new Map(); // sessionId -> turn collector
+  const visionWaiters = new Map(); // sessionId -> { resolve, timer }
+  const visionCollectors = new Map(); // sessionId -> turn collector
   const sendToolSucceededSessions = new Set(); // sessionId：当前 turn 内 MCP 发送类工具至少成功一次
   const v2TurnStartAt = new Map(); // sessionId -> timestamp：reserved2 turn 开始时间，用于判断是否“无行动”
   const toolCallNames = new Map(); // sessionId -> Map<callId, toolName>：用于结果日志关联工具名
@@ -9116,6 +9168,9 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     return roleState.mode === 'silent' && key !== `private:${String(cfg.ownerQQ ?? '')}`;
   }
 
+  const rawTransport = createTransport({ sendToQQ });
+  const securityNotifier = createSecurityNotifier({ sendRaw: rawTransport.sendRaw, log });
+
   // 统一出站消息：先完整文本审计，再发送。返回是否真的发出。
   async function auditAndSend(key, text) {
     const hasKnownToken = [...KNOWN_AGENT_TOKENS].some((t) => t && String(text ?? '').includes(t));
@@ -9123,11 +9178,11 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       log(`⚠️ 回复被安全策略拦截 (${key})，疑似包含敏感信息${hasKnownToken ? '（含会话令牌）' : ''}`);
       appendActivity(`${key} agent 回复被拦截（疑似敏感信息${hasKnownToken ? '/会话令牌' : ''}）`);
       if (cfg.security?.interceptNotify !== false) {
-        await sendToQQ(key, '⚠️ 本条回复因疑似包含敏感信息（路径/凭据/会话令牌）被安全策略拦截，已记录并通知管理员。');
+        await securityNotifier.notifySecurity(key, '⚠️ 本条回复因疑似包含敏感信息（路径/凭据/会话令牌）被安全策略拦截，已记录并通知管理员。');
       }
       return false;
     }
-    await sendToQQ(key, text);
+    await rawTransport.sendRaw(key, text);
     return true;
   }
 
@@ -10114,10 +10169,216 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     return true;
   }
 
-  // 二期：观望阶段主动开话题（第三种触发）
-  function buildProactivePrompt(key, roleHint) {
-    return buildProactivePromptText({ roleHint, contextBlock: buildContextBlock(key) });
+  // E5：主动开话题统一走 runInitiative → Orchestrator，不再拼旧 DSH prompt。
+  async function runInitiative(key, cfg, reason, drive = 'care') {
+    const asks = dialogueAsks(cfg);
+    if (!asks) return false;
+    let roleHint = '';
+    try { roleHint = currentRoleHint() || ''; } catch {}
+    const pipe = await orchestrateDialog({
+      event: {
+        chat: key,
+        sender: { id: '', name: '系统', isSelf: false, isBot: false },
+        text: `（${reason}）`,
+        at: ['你'],
+        media: [],
+        initiative: true,
+        initiativeReason: reason
+      },
+      thread: threadStore.snapshot(key),
+      roleHint,
+      cfg,
+      asks,
+      context: buildDialogueContext(key)
+    });
+    if (!pipe.plan) {
+      log(`主动表达未产出 ${key}（stage=${pipe.stage}｜drive=${drive}）`);
+      return false;
+    }
+    const ok = await sendSpeakerPlan(key, pipe.plan, cfg);
+    if (ok) log(`主动表达已发送 ${key}（${reason}）`);
+    return ok;
   }
+
+  async function fetchGroupHistoryLines(groupId, limit = 30) {
+    const count = Math.max(1, Math.min(50, Number(limit) || 30));
+    const res = await onebotHttpAction('get_group_msg_history', { group_id: Number(groupId), count }, { timeoutMs: 8000 });
+    const data = res?.data ?? res;
+    const list = Array.isArray(data?.messages) ? data.messages : (Array.isArray(data) ? data : []);
+    return list.slice(-count).map((m) => {
+      const who = String(m?.sender?.card || m?.sender?.nickname || m?.sender?.user_id || '');
+      const text = String(m?.raw_message ?? m?.message ?? '').replace(/\[CQ:[^\]]+\]/g, '[媒体]').trim();
+      return text ? `${who}：${text}` : '';
+    }).filter(Boolean).join('\n');
+  }
+
+  async function describeImages(key, mediaList) {
+    const items = (Array.isArray(mediaList) ? mediaList : []).filter((m) => m && m.kind === 'image' && m.url).slice(0, 3);
+    if (!items.length) return '';
+    let sessionId = '';
+    try {
+      sessionId = await ensureSession(key);
+      const content = await buildDeliveryContent({
+        promptText: '你在帮 QQ 机器人看图。只描述图片里真实可见的内容：人物/物体/场景/文字/表情。看不清就说看不清，不要猜，不要编。80 字以内。只输出描述，不要回复聊天。',
+        media: items,
+        withSlangContext: (t) => t,
+        resolveMediaList
+      });
+      const text = await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          visionWaiters.delete(sessionId);
+          visionCollectors.delete(sessionId);
+          resolve('');
+        }, 25000);
+        visionWaiters.set(sessionId, { resolve, timer });
+        api.sessions.prompt({ sessionId, mode: 'queue', content }).catch(() => {
+          clearTimeout(timer);
+          visionWaiters.delete(sessionId);
+          visionCollectors.delete(sessionId);
+          resolve('');
+        });
+      });
+      return String(text || '').trim().slice(0, 500);
+    } catch {
+      if (sessionId) { visionWaiters.delete(sessionId); visionCollectors.delete(sessionId); }
+      return '';
+    }
+  }
+
+
+  function buildDialogueContext(key, injection = null) {
+    return {
+      recall: () => {
+        const snap = threadStore.snapshot(key);
+        let block = '';
+        try { block = buildContextBlock(key) || ''; } catch {}
+        let slang = '';
+        try { slang = buildSlangContext(slangEntries, cfg.slang?.injectMax ?? 8) || ''; } catch {}
+        const parts = [
+          injection?.memory,
+          injection?.recall,
+          injection?.context,
+          injection?.mood,
+          injection?.emotion,
+          slang,
+          block
+        ].filter(Boolean);
+        const lines = parts.join('\n').split('\n').map((x) => x.trim()).filter(Boolean);
+        return {
+          lines: lines.slice(-80),
+          evidence: (snap.events ?? []).map((e) => `${e.sender?.name ?? ''}：${e.text ?? ''}`),
+          facts: [],
+          commitments: []
+        };
+      },
+      appraise: () => {
+        try {
+          const m = moodFor(key);
+          return { label: m.label(), valence: 0, arousal: 0.3, prompt: injection?.emotion || '' };
+        } catch {
+          return { label: '平静', valence: 0, arousal: 0.3, prompt: injection?.emotion || '' };
+        }
+      }
+    };
+  }
+
+  const executionGateway = createExecutionGateway({
+    sendOne: async (chat, msg) => {
+      const ok = await auditAndSend(chat, msg);
+      if (!ok) throw new Error('audit-blocked');
+    },
+    now: () => Date.now(),
+    log: (m) => log(m)
+  });
+
+  async function sendSystem(key, text, reason = 'system') {
+    if (!text) return false;
+    const result = await executionGateway.execute({
+      actionId: key + ':sys:' + Date.now() + ':' + crypto.randomBytes(3).toString('hex'),
+      source: 'system',
+      type: 'reply',
+      chat: key,
+      messages: [String(text)],
+      reason
+    });
+    return result.ok === true;
+  }
+
+  async function sendCommand(key, text, reason = 'command') {
+    if (!text) return false;
+    const result = await executionGateway.execute({
+      actionId: key + ':cmd:' + Date.now() + ':' + crypto.randomBytes(3).toString('hex'),
+      source: 'command',
+      type: 'reply',
+      chat: key,
+      messages: [String(text)],
+      reason
+    });
+    return result.ok === true;
+  }
+
+  async function sendSpeakerPlan(key, plan, cfg) {
+    let messages = Array.isArray(plan?.messages) ? plan.messages : [];
+    if (!messages.length) return false;
+    // 恢复旧表达层：润色 + 插件 onReply（失败不影响发送）
+    try {
+      messages = messages.map((m) => { try { return polishReply(m) || m; } catch { return m; } }).filter(Boolean);
+    } catch {}
+    try {
+      const rewritten = await runPluginHook('onReply', { key, text: messages.join(' '), cfg });
+      if (rewritten && typeof rewritten.text === 'string' && rewritten.text.trim()) {
+        messages = [rewritten.text.trim()];
+        log(`[plugin] 回复已被插件改写（${key}）`);
+      }
+    } catch (error) {
+      log(`[plugin] onReply 异常（忽略）：${error?.message ?? error}`);
+    }
+    if (!messages.length) return false;
+    const delays = messages.slice(0, -1).map((_, i) => {
+      const d = Number(plan.delayMs?.[i]);
+      return Number.isFinite(d) && d >= 0 ? d : randInt(
+        Number(cfg.social?.burstIntervalMinMs ?? 1000),
+        Number(cfg.social?.burstIntervalMaxMs ?? 3000)
+      );
+    });
+    const result = await executionGateway.execute({
+      actionId: key + ':' + Date.now() + ':' + crypto.randomBytes(3).toString('hex'),
+      source: 'dialogue',
+      type: 'reply',
+      chat: key,
+      messages,
+      delayMs: delays,
+      standards: { pass: true },
+      reason: 'speaker-plan'
+    });
+    if (!result.ok) {
+      log(`执行层拒发 ${key}：${result.reason ?? '?'}（已发 ${result.sent?.length ?? 0} 条）`);
+      return false;
+    }
+    lastBotReplyAt.set(key, Date.now());
+    const joined = messages.join(' ');
+    if (key.startsWith('group:')) {
+      const name = selfDisplayName || cfg.role?.displayName || '鱼鱼';
+      try { rememberGroupLine(key.slice(6), name, joined, { self: true }); } catch {}
+      try { appendRecentMessage(key, name, joined, joined, false, false, [], ''); } catch {}
+      try {
+        const evt = appendEvent({
+          chat: key,
+          sender: { id: String(selfUserId ?? ''), name, isSelf: true, isBot: true },
+          text: joined,
+          media: []
+        }, { dir: DIALOGUE_DIR });
+        threadStore.observe(evt);
+      } catch {}
+    }
+    try { ctxEngine.markAnswered(key, {}); } catch {}
+    void maybeExtractMemory(key, lastInboundForMemory.get(key) ?? '', joined, cfg);
+    void compressConversation(key, cfg);
+    void maybeSendExtras(key, joined);
+    recordDialogueTurn({ chat: key, trigger: 'speaker-live', sender: '', text: '', action: 'reply', contract: { action: 'reply', replyTo: plan?.replyTo || '', reason: 'speaker-live' }, spoken: plan, reason: 'speaker-live' });
+    return true;
+  }
+
 
   async function deliverPromptNow(key, promptText, opts = {}) {
     return runDeliverPromptNow(key, promptText, opts, {
@@ -10157,6 +10418,12 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
 
   // 每个 QQ 会话串行投递 DSH prompt，保证 turn 完成顺序与提交顺序一致。
   function deliverPrompt(key, promptText, opts = {}) {
+    // E5：旧 DSH 不再生成对话回复；只允许摘要/记忆等 internal/silent 投递。
+    if (cfg.dialogue?.useSpeaker === true && cfg.dialogue?.legacyDialogDisabled !== false
+      && opts.silent !== true && opts.internal !== true) {
+      log(`旧 DSH 对话投递已禁用 ${key}（${opts.wakeReason || 'legacy'}）`);
+      return Promise.resolve({ ok: false, blocked: true, reason: 'legacy-dialog-disabled' });
+    }
     return promptQueue.enqueue(key, promptText, opts);
   }
 
@@ -10198,14 +10465,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
               st.proactiveNextCheckAt = now + randInt(Number(cfg.social?.proactiveCheckMinMs ?? 2700000), Number(cfg.social?.proactiveCheckMaxMs ?? 5400000));
               if (Math.random() < Number(cfg.social?.proactiveProbability ?? 0.2)) {
                 enterActive(key);
-                const roleHint = currentRoleHint();
-                const promptText = buildProactivePrompt(key, roleHint);
-                scheduleSocialReply(
-                  key, promptText,
-                  Number(cfg.social?.activeReplyDelayMinMs ?? 2000),
-                  Number(cfg.social?.activeReplyDelayMaxMs ?? 8000),
-                  '主动开话题'
-                );
+                void runInitiative(key, cfg, '主动开话题', 'care');
                 log(`社交模式：${key} 观望期主动开话题，进入活跃`);
               }
             }
@@ -11777,6 +12037,9 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
             gateAction = 'chime';
             lastChimeAt.set(key, Date.now());
             log(`群聊随机插话 ${key}（判定「否」但抽中 ${Math.round(chimeP * 100)}%｜${plainText.slice(0, 30)}）`);
+            const ok = await runInitiative(key, cfg, '接一句', 'play');
+            recordDialogueTurn({ chat: key, trigger: 'smart-gate', sender: senderName, text: plainText, at: atNames, gate, action: ok ? 'chime' : 'skip', contract: { action: ok ? 'reply' : 'skip', interject: true, reason: 'chime' }, reason: verdict.reason || '' });
+            return;
           } else {
             recordDialogueTurn({ chat: key, trigger: 'smart-gate', sender: senderName, text: plainText, at: atNames, gate, action: 'skip', reason: verdict.reason || '否' });
             log(`群聊判断「不是在跟我说」跳过 ${key}（${verdict.reason || '?'}｜${plainText.slice(0, 30)}）`);
@@ -11816,6 +12079,23 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     }
     const mediaList = extractMediaFromSegments(event.message ?? []);
     const messageRef = String(event.message_id ?? event.msg_id ?? event.message_seq ?? '');
+    try {
+      const otherBotNames = new Set((cfg.role?.smartTrigger?.otherBots ?? []).map(String));
+      const replySeg = (event.message ?? []).find((seg) => seg?.type === 'reply');
+      const evt = appendEvent({
+        chat: key,
+        sender: {
+          id: String(event.sender?.user_id ?? event.user_id ?? ''),
+          name: String(event.sender?.card ?? event.sender?.nickname ?? event.user_id ?? ''),
+          isSelf: false,
+          isBot: otherBotNames.has(String(event.sender?.card ?? event.sender?.nickname ?? ''))
+        },
+        text: plainContent || textContent,
+        replyTo: String(replySeg?.data?.id ?? ''),
+        media: mediaList.map((m) => m.kind)
+      }, { dir: DIALOGUE_DIR });
+      threadStore.observe(evt);
+    } catch {}
     const seqRef = event.message_seq != null ? String(event.message_seq) : '';
     const refsToStore = [...new Set([messageRef, seqRef].filter(Boolean))];
     if (refsToStore.length > 0 && mediaList.length > 0) {
@@ -11859,14 +12139,14 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
 
     // 控制类话语：仅管理员（ownerQQ）可下达；群友触发直接拦截
     if (!isOwner && /进入角色扮演|退出角色扮演|切换角色|设置角色|改角色|换角色|关闭角色扮演|开启角色扮演/.test(plainContent)) {
-      await sendToQQ(key, '角色切换仅管理员可在管理端操作，群内不支持。');
+      await sendCommand(key, '角色切换仅管理员可在管理端操作，群内不支持。');
       return;
     }
 
     // 管理命令：仅管理员（ownerQQ）可用，且由桥接直接执行（硬性，不经过模型）
     if (plainContent.startsWith('/')) {
       if (!isOwner) {
-        await sendToQQ(key, '管理命令仅管理员可用。');
+        await sendCommand(key, '管理命令仅管理员可用。');
         return;
       }
       if (plainContent === '/reset' || plainContent === '/new') {
@@ -11918,39 +12198,39 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
           try { await withTimeout(api.stopSessionWork(old), DSH_CONTROL_TIMEOUT_MS, 'stopSessionWork'); }
           catch (error) { log(`⚠️ 停止旧会话失败 ${key}：${error?.message ?? error}；请在 DSH 检查旧任务`); }
           try { await withTimeout(api.workspace.archiveSession({ sessionId: old }), DSH_CONTROL_TIMEOUT_MS, 'archiveSession'); } catch {}
-          await sendToQQ(key, '已重置会话，下次消息将开新上下文');
+          await sendCommand(key, '已重置会话，下次消息将开新上下文');
         }
         return;
       }
       if (plainContent === '/status') {
         const rs = readRoleState();
-        await sendToQQ(key, `会话 ${state.sessions[key] ?? '未创建'}；白名单 ${allowed(kind, id, cfg) ? '通过' : '拦截'}；角色 ${rs.role ?? '无'}；模式 ${rs.mode}`);
+        await sendCommand(key, `会话 ${state.sessions[key] ?? '未创建'}；白名单 ${allowed(kind, id, cfg) ? '通过' : '拦截'}；角色 ${rs.role ?? '无'}；模式 ${rs.mode}`, 'session-info');
         return;
       }
       if (plainContent === '/role' || plainContent.startsWith('/role ')) {
         const name = sanitizeRoleName(plainContent.slice(5).trim());
         if (!name || name === 'off' || name === 'clear') {
           writeRoleState(null, roleState.mode);
-          await sendToQQ(key, '已清除角色，恢复正常人格。');
+          await sendCommand(key, '已清除角色，恢复正常人格。');
         } else {
           const roleFile = path.join(ROOT, 'roles', name + '.md');
           if (!fs.existsSync(roleFile)) {
-            await sendToQQ(key, `角色「${name}」不存在。角色文件放 qq-bridge/roles/ 目录。`);
+            await sendCommand(key, `角色「${name}」不存在。角色文件放 qq-bridge/roles/ 目录。`, 'role-missing');
           } else {
             writeRoleState(name, roleState.mode);
-            await sendToQQ(key, `已切换角色：${name}。`);
+            await sendCommand(key, `已切换角色：${name}。`, 'role-switch');
           }
         }
         return;
       }
       if (plainContent === '/silent' || plainContent === '/quiet') {
         writeRoleState(roleState.role, 'silent');
-        await sendToQQ(key, '已进入静默模式：群友消息不再回复，仅管理员可对话。');
+        await sendCommand(key, '已进入静默模式：群友消息不再回复，仅管理员可对话。');
         return;
       }
       if (plainContent === '/active' || plainContent === '/speak') {
         writeRoleState(roleState.role, 'active');
-        await sendToQQ(key, '已退出静默模式，恢复正常回复。');
+        await sendCommand(key, '已退出静默模式，恢复正常回复。');
         return;
       }
       // 其余 / 开头内容照常发给 DSH（DSH 的斜杠命令原样执行，如 /model）
@@ -12084,6 +12364,74 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     appendActivity(`${key} ${isOwner ? '管理员' : '群友'} ${event.sender?.nickname || event.user_id}：${textContent.slice(0, 80)}`);
 
     // 仿真群友模式：reserved 走状态机（观望/活跃/试探/退场）
+    if (cfg.dialogue?.useSpeaker === true && (
+      (cfg.dialogue?.canaryGroups ?? []).map(String).includes(String(id)) ||
+      (kind === 'private' && cfg.dialogue?.canaryPrivate !== false && !/^\s*[/#]/.test(String(plainContent || '')))
+    )) {
+      try {
+        const asks = dialogueAsks(cfg);
+        if (asks) {
+          const roleHintForPipe = (() => { try { return currentRoleHint() || ''; } catch { return ''; } })();
+          if (mediaList.some((m) => m.kind === 'image')) {
+            const desc = await describeImages(key, mediaList);
+            if (desc) {
+              injection.context = [injection.context, '【当前图片】' + desc].filter(Boolean).join('\n');
+              log(`已识图 ${key}：${desc.slice(0, 40)}`);
+            } else {
+              injection.context = [injection.context, '【当前图片】无法读取，不要假装看见。'].filter(Boolean).join('\n');
+            }
+          }
+          // 只在用户明确要看记录时拉取，默认 30 条，最多 50 条。
+          if (kind === 'group' && /(聊天记录|翻.{0,4}记录|刚才|之前说|上面说|历史记录)/.test(String(plainContent || textContent))) {
+            try {
+              const historyBlock = await fetchGroupHistoryLines(id, cfg.dialogue?.historyLimit ?? 30);
+              if (historyBlock) {
+                injection.context = [injection.context, '【按需聊天记录】\n' + historyBlock].filter(Boolean).join('\n');
+                log(`按需读取群历史 ${key}（${historyBlock.split('\n').length} 条）`);
+              }
+            } catch (error) {
+              log(`按需读取群历史失败 ${key}：${error?.message ?? error}`);
+            }
+          }
+          const pipe = await orchestrateDialog({
+            event: {
+              chat: key,
+              sender: {
+                id: String(event.user_id ?? ''),
+                name: String(event.sender?.card ?? event.sender?.nickname ?? ''),
+                isBot: (cfg.role?.smartTrigger?.otherBots ?? []).map(String).includes(String(event.sender?.card ?? event.sender?.nickname ?? ''))
+              },
+              text: plainContent || textContent,
+              at: addressedForCtx ? ['你'] : [],
+              media: mediaList.map((m) => m.kind)
+            },
+            thread: threadStore.snapshot(key),
+            roleHint: roleHintForPipe,
+            cfg,
+            asks,
+            context: buildDialogueContext(key, injection)
+          });
+          if (pipe.trace?.prediction && cfg.dialogue?.predictorShadow !== false) {
+            recordDialogueTurn({
+              chat: key,
+              trigger: 'predictor-shadow',
+              sender: String(event.sender?.card ?? event.sender?.nickname ?? ''),
+              text: plainContent || textContent,
+              action: 'shadow',
+              prediction: pipe.trace.prediction,
+              reason: 'predictor'
+            });
+          }
+          if (pipe.plan) {
+            log(`新链路发送 ${key}（${pipe.plan.messages.length} 条｜${pipe.trace?.totalMs ?? '?'}ms）`);
+            await sendSpeakerPlan(key, pipe.plan, cfg);
+            return;
+          }
+          log(`新链路未产出 ${key}（stage=${pipe.stage}｜standards=${pipe.trace?.standards?.pass}）`);
+          return;
+        }
+      } catch (error) { log('新链路失败，回退旧链路: ' + (error?.message ?? error)); }
+    }
     if (isSocialEnabled()) {
       const sender = kind === 'group' ? (event.sender?.card || event.sender?.nickname || String(event.user_id)) : '私聊';
       appendRecentMessage(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, mediaList, messageRef); // AI 始终感知
@@ -12145,6 +12493,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
         ? `请回复消息。\n${directionHint}${SPACE_SPLIT_HINT}`
         : `请根据情况决定是否回复。如果不需要回应、想潜水/不接话，请只输出 ${SILENT_MARKER}；否则正常回复。\n${directionHint}${SPACE_SPLIT_HINT}`;
       const promptText = `${roleHint ? roleHint + '\n\n' : ''}【群聊上下文】\n${buildContextBlock(key)}\n【当前消息】${currentLine}${mediaHintFor(key, messageRef, mediaList)}\n\n${replyInstruction}`;
+
       if (isOwner && kind === 'private') {
         log(`社交模式：管理员私聊触发，立即投递 ${key}`);
         await deliverPrompt(key, promptText, { media: mediaList });
@@ -12173,7 +12522,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       const now = Date.now();
       if ((queuedHintAt.get(key) ?? 0) + QUEUE_HINT_COOLDOWN_MS < now) {
         queuedHintAt.set(key, now);
-        await sendToQQ(key, '⏳ 系统服务重启中，消息已排队，恢复后自动处理。');
+        await sendSystem(key, '⏳ 系统服务重启中，消息已排队，恢复后自动处理。', 'queue-notice');
       }
       log(`DSH 不可用，消息入队 (${key})`);
       return;
@@ -12215,7 +12564,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     if (!accepted.result.ok) {
       const errText = `${accepted.result.error.code}: ${accepted.result.error.message}`;
       const safeErrText = shouldAuditKey(key) && SENSITIVE_RE.test(errText) ? '（含敏感信息，已隐藏）' : errText;
-      await sendToQQ(key, `⚠️ 消息未被接受：${safeErrText}`);
+      await sendSystem(key, `⚠️ 消息未被接受：${safeErrText}`, 'message-rejected');
       return;
     }
     if (accepted.result.value.command) {
@@ -12223,7 +12572,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       if (accepted.result.value.command.text) await auditAndSend(key, mdToPlain(accepted.result.value.command.text));
       return;
     }
-    if (cfg.ackMessage && !socialToolsModeAllowed()) await sendToQQ(key, cfg.ackMessage);
+    if (cfg.ackMessage && !socialToolsModeAllowed()) await sendSystem(key, cfg.ackMessage, 'ack');
     if (accepted.result.ok) steerInflight.set(key, Date.now());
     log(`已投递 ${key}${useSteer ? '（steer 并入当前回合）' : ''}: ${promptText.slice(0, 80)}${promptText.length > 80 ? '…' : ''}`);
   }
@@ -12273,13 +12622,13 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
         if (pending.get(key) === p) pending.delete(key);
       } catch (error) {
         log('回答问题失败（保留挂起以便重试）:', error.message);
-        await sendToQQ(key, '⚠️ 回答提交失败，请再回复一次。');
+        await sendCommand(key, '⚠️ 回答提交失败，请再回复一次。', 'approval');
       }
       return;
     }
     if (p.kind === 'approval') {
       if (!isOwner) {
-        await sendToQQ(key, '审批仅管理员可操作');
+        await sendCommand(key, '审批仅管理员可操作', 'approval');
         return;
       }
       const t = answerText.trim().toLowerCase();
@@ -12287,7 +12636,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       for (const w of APPROVE_WORDS) if (t === w) outcome = 'allowed-once';
       for (const w of REJECT_WORDS) if (t === w) outcome = 'rejected';
       if (!outcome) {
-        await sendToQQ(key, '请回复「通过」或「拒绝」来决定这个审批');
+        await sendCommand(key, '请回复「通过」或「拒绝」来决定这个审批', 'approval');
         return;
       }
       try {
@@ -12297,12 +12646,12 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
           outcome: { kind: 'result', value: outcome }
         });
         log(`已处理审批 (${key}): ${outcome}`, receipt);
-        await sendToQQ(key, outcome === 'allowed-once' ? '✅ 已通过审批' : '❌ 已拒绝审批');
+        await sendCommand(key, outcome === 'allowed-once' ? '✅ 已通过审批' : '❌ 已拒绝审批', 'approval');
         // 只有回执成功才移除挂起，且必须仍是同一个挂起（防止期间被新请求覆盖）
         if (pending.get(key) === p) pending.delete(key);
       } catch (error) {
         log('处理审批失败（保留挂起以便重试）:', error.message);
-        await sendToQQ(key, '⚠️ 审批回执提交失败，请再回复一次「通过」或「拒绝」。');
+        await sendCommand(key, '⚠️ 审批回执提交失败，请再回复一次「通过」或「拒绝」。', 'approval');
       }
       return;
     }
@@ -12353,7 +12702,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
         const chance = Number(cfg.role?.pokeReplyProbability ?? 0.35);
         if (Math.random() < chance) {
           const line = ['别戳', '戳什么戳', '在呢', '手别乱动'][Math.floor(Math.random() * 4)];
-          try { await sendToQQ(key, line); } catch {}
+          try { await sendSystem(key, line, 'poke-reply'); } catch {}
         }
         return;
       }
@@ -12463,6 +12812,24 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
             // Token 记账放在最前面：无论会话是否仍属当前模式/是否学习会话，
             // 花掉的钱都是真的，都必须入账（归属由 resolveKey 决定）。
             recordSessionUsage(frame.sessionId, frame.event);
+            if (visionWaiters.has(frame.sessionId)) {
+              let vc = visionCollectors.get(frame.sessionId);
+              if (!vc && frame.event?.type === 'turn/start') {
+                vc = createTurnCollector();
+                visionCollectors.set(frame.sessionId, vc);
+              }
+              if (vc) {
+                const ended = vc.push(frame.event);
+                if (ended) {
+                  const waiter = visionWaiters.get(frame.sessionId);
+                  visionWaiters.delete(frame.sessionId);
+                  visionCollectors.delete(frame.sessionId);
+                  if (waiter?.timer) clearTimeout(waiter.timer);
+                  waiter?.resolve(String(ended.text ?? ''));
+                }
+              }
+              continue;
+            }
             const key = reverse.get(frame.sessionId);
             if (!key) {
               // 黑话学习会话：只收集 turn，不发送 QQ，并唤醒等待中的学习任务。
@@ -12691,139 +13058,16 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
                   }
                   continue;
                 }
-                // 审计（对完整文本执行，避免截断漏判；这里只判断，不发送，避免双重发送）
-                const hasKnownToken = [...KNOWN_AGENT_TOKENS].some((t) => t && plain.includes(t));
-                if (shouldAuditKey(key) && (SENSITIVE_RE.test(plain) || hasKnownToken)) {
-                  log(`⚠️ 回复被安全策略拦截 (${key})，疑似包含敏感信息${hasKnownToken ? '（含会话令牌）' : ''}`);
-                  appendActivity(`${key} agent 回复被拦截（疑似敏感信息${hasKnownToken ? '/会话令牌' : ''}）`);
-                  if (cfg.security?.interceptNotify !== false) {
-                    await sendToQQ(key, '⚠️ 本条回复因疑似包含敏感信息（路径/凭据/会话令牌）被安全策略拦截，已记录并通知管理员。');
-                  }
-                  if (isFarewell) {
-                    const st = socialState(key);
-                    if (st.phase === 'exiting') {
-                      st.phase = 'idle';
-                      st.activeDeadlineAt = 0;
-                      st.activeExitAt = 0;
-                      log(`社交模式：${key} 退场发言被拦截，回到观望`);
-                    }
-                  }
-                  continue;
-                }
                 // 仿真群友模式：时间线多段发送（主回复 + 可选二次补刀）
-                if (isSocialEnabled()) {
-                  if (shouldBlockSilentReply(key)) {
-                    log(`静默模式，拦截在途回复 (${key})`);
-                    appendActivity(`${key} 静默模式，拦截在途回复`);
-                    if (isFarewell) {
-                      const st = socialState(key);
-                      if (st.phase === 'exiting') {
-                        st.phase = 'idle';
-                        st.activeDeadlineAt = 0;
-                        st.activeExitAt = 0;
-                        log(`社交模式：${key} 静默模式下退场回合被拦截，回到观望`);
-                      }
-                    }
-                    continue;
-                  }
-                  const timeline = planSocialTimeline(plain, cfg.social);
-                  const messages = timeline.main;
-                  log(`agent 回复 (${key}) ${plain.length} 字 → ${messages.length} 条`);
-                  appendActivity(`${key} agent 回复：${messages[0].slice(0, 80)}${messages.length > 1 ? '（分' + messages.length + '条）' : ''}${messages[0].length > 80 ? '…' : ''}`);
-                  if (messages.length > 1) {
-                    await sendBurstToQQ(key, messages, cfg.social);
-                  } else {
-                    await sendToQQ(key, messages[0]);
-                  }
-                  // 发言后刷新活跃时间，并调度可能的二次补刀
-                  const st = socialState(key);
-                  if (isFarewell) {
-                    // 确认为退场发言：不再刷新活跃时间、不调度补刀，直接进入观望
-                    st.phase = 'idle';
-                    st.activeDeadlineAt = 0;
-                    st.activeExitAt = 0;
-                    log(`社交模式：${key} 退场发言完成，进入观望`);
-                  } else if (st.phase === 'exiting') {
-                    // 退场期间有旧回复恰好完成：照常发出，但不把它当作退场，也不调度补刀
-                    log(`社交模式：${key} 退场期间旧回复完成，保持退场状态`);
-                  } else {
-                    if (lastSendSucceeded(key)) {
-                      st.lastActiveMessageAt = Date.now();
-                      st.lastAiReplyAt = Date.now();
-                      log(`社交模式：发言完成，刷新活跃时间 (${key})`);
-                    } else {
-                      // 发送其实失败了（网关报错/超时/被限流）。旧代码照样刷新时间戳，
-                      // 于是「我说过话了」这个判断被写进状态：主动发言概率被压低、
-                      // 活跃调度往前走，而群里根本没收到消息。这里不刷新，让下一轮照常补上。
-                      log(`社交模式：${key} 本轮发言未送达（QQ 发送失败），不刷新活跃时间`);
-                    }
-                  }
-                } else if (currentMode === 'reserved2') {
-                  log(`[reserved2] AI 内部输出（不自动转发）(${key}): ${plain.slice(0, 80)}`);
-                  appendActivity(`${key} [reserved2] AI 内部输出：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
-                } else {
-                  if (shouldBlockSilentReply(key)) {
-                    log(`静默模式，拦截在途回复 (${key})`);
-                    appendActivity(`${key} 静默模式，拦截在途回复`);
-                    continue;
-                  }
-                  steerInflight.delete(key);
-                  log(`agent 回复 (${key}) ${plain.length} 字`);
-                  appendActivity(`${key} agent 回复：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
-                  if (key.startsWith('group:')) {
-                    try {
-                      rememberGroupLine(key.slice(6), selfDisplayName || cfg.role?.displayName || '鱼鱼', plain);
-                      appendRecentMessage(key, selfDisplayName || cfg.role?.displayName || '鱼鱼', plain, plain, false, false, [], '');
-                    } catch {}
-                  }
-                  lastBotReplyAt.set(key, Date.now());
-                  // 回了话 → 清掉该会话的"待回应"（语境引擎据此知道对方的问题被接住了）
-                  try { ctxEngine.markAnswered(key, {}); } catch {}
-                  // 回合结束后异步提取记忆（冷却期内只跑一次，失败不影响发消息）
-                  void maybeExtractMemory(key, lastInboundForMemory.get(key) ?? '', plain, cfg);
-                  // 会话变长就压缩前文（内部有阈值与冷却，不会每轮都调模型）
-                  void compressConversation(key, cfg);
-                  // 【本地适配 2026-10-26】表达层：先把 AI 腔洗掉，再按句读切气泡。
-                  // polishReply 只做安全替换（去"作为一个AI"、列表符号、客套收尾），不改意思。
-                  // 插件：回复改写钩子（可以整段替换要发出去的话）
-                  let replyText = plain;
-                  try {
-                    const rewritten = await runPluginHook('onReply', { key, text: plain, cfg });
-                    if (rewritten && typeof rewritten.text === 'string' && rewritten.text.trim()) {
-                      replyText = rewritten.text;
-                      log(`[plugin] 回复已被插件改写（${plain.length} → ${replyText.length} 字）`);
-                    }
-                  } catch (error) {
-                    log(`[plugin] onReply 异常（忽略）：${error?.message ?? error}`);
-                  }
-                  let plainToSend = replyText;
-                  try {
-                    const polished = polishReply(plain);
-                    if (polished && polished.length >= 1) plainToSend = polished;
-                  } catch (error) {
-                    log(`[express] 润色失败（用原文）：${error?.message ?? error}`);
-                  }
-                  const shape = normalizeReplyShape(cfg);
-                  const bubbles = splitReplyIntoBubbles(plainToSend, { maxBubbles: shape.maxBubbles, maxLen: shape.maxChars });
-                  if (bubbles.length <= 1) {
-                    await sendToQQ(key, plainToSend);
-                  } else {
-                    for (let bi = 0; bi < bubbles.length; bi += 1) {
-                      if (bi > 0) await new Promise((r) => setTimeout(r, pickGapMs(shape)));
-                      await sendToQQ(key, bubbles[bi]);
-                    }
-                  }
-                  // 【本地新增 2026-10-26】自主补表情：文字发完后，按情绪和内容决定要不要再发个表情。
-                  // 有冷却、有概率、可用 config.role.expression 关掉；失败绝不影响已经发出去的文字。
-                  void maybeSendExtras(key, plainToSend);
-                }
+                // E5：旧 DSH 对话发送已删除；这里只记一条日志，不再往 QQ 发。
+                log(`[e5] 旧 DSH 回合完成，对话发送已禁用 (${key})`);
               } else if (ended.reason.kind === 'error') {
                 const msg = ended.reason.error?.message ?? '未知错误';
                 const safeMsg = shouldAuditKey(key) && SENSITIVE_RE.test(msg) ? '（含敏感信息，已隐藏）' : msg.slice(0, 500);
                 // 以前这里只发 QQ、不写日志：出问题时 bridge.log 里什么都没有，排查只能靠猜（PR #24）。
                 log(`⚠️ agent 处理出错 (${key})：${safeMsg}`);
                 appendActivity(`${key} agent 处理出错：${safeMsg.slice(0, 80)}`);
-                await sendToQQ(key, `⚠️ agent 处理出错：${safeMsg}`);
+                await sendSystem(key, `⚠️ agent 处理出错：${safeMsg}`, 'agent-error');
                 if (isFarewell) {
                   const st = socialState(key);
                   if (st.phase === 'exiting') {
@@ -12835,7 +13079,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
                 }
               } else if (ended.reason.kind === 'aborted') {
                 log(`⏹️ 回合被中止 (${key})`);
-                await sendToQQ(key, '⏹️ 已停止');
+                await sendSystem(key, '⏹️ 已停止', 'stopped');
                 if (isFarewell) {
                   const st = socialState(key);
                   if (st.phase === 'exiting') {
@@ -12900,7 +13144,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
               }
               return s;
             });
-            await sendToQQ(key, '❓ agent 需要你回答：\n' + lines.join('\n') + '\n（直接回复选项文字或输入你的回答）');
+            await sendSystem(key, '❓ agent 需要你回答：\n' + lines.join('\n') + '\n（直接回复选项文字或输入你的回答）', 'agent-question');
             await registerPending(key, { kind: 'question', rpcId: envelope.rpcId, sessionId: frame.sessionId, clientId: frame.clientId, eventId: frame.eventId, questions: frame.questions });
           } else if (frame.type === 'approval/requested') {
             const key = reverse.get(frame.sessionId);
@@ -12915,7 +13159,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
             const sensitiveTool = shouldAuditKey(key) && SENSITIVE_RE.test(rawToolName);
             if (sensitiveTool) log(`⚠️ 审批工具名含敏感信息，已隐藏 (${key})`);
             const safeToolName = sensitiveTool ? '（含敏感信息，已隐藏）' : rawToolName;
-            await sendToQQ(key, `🔐 agent 请求审批：${safeToolName}${reason}\n回复「通过」或「拒绝」`);
+            await sendSystem(key, `🔐 agent 请求审批：${safeToolName}${reason}\n回复「通过」或「拒绝」`, 'agent-approval');
             await registerPending(key, { kind: 'approval', rpcId: envelope.rpcId, sessionId: frame.sessionId, clientId: frame.clientId, eventId: frame.eventId, toolName: frame.toolName });
           } else if (frame.type === 'stream/error') {
             log('事件流错误:', frame.error);

@@ -21,6 +21,15 @@ $logFile = Join-Path $logDir 'watchdog.log'
 $pidFile = Join-Path $state 'watchdog.pid'
 $beatFile = Join-Path $state 'watchdog.beat'
 
+# SnowLuma 目录从 config.json 读；没配就跳过（不写死本机路径）
+$snowDir = ''
+try {
+  $cfgPath = Join-Path $repo 'config.json'
+  if (Test-Path $cfgPath) { $snowDir = (Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json).snowluma.homeDir }
+} catch {}
+$lastSnowNote = [datetime]::MinValue
+$snowProcPattern = '*index.mjs*'
+
 New-Item -ItemType Directory -Force -Path $state | Out-Null
 
 function W($msg) {
@@ -132,8 +141,42 @@ function Start-ServiceByName($svc) {
   }
 }
 
+function Get-SnowProc {
+  if (-not $snowDir) { return @() }
+  return @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.ExecutablePath -eq (Join-Path $snowDir 'node.exe') -or
+      ($_.CommandLine -and $_.CommandLine -like ('*' + $snowDir + '\index.mjs*'))
+    })
+}
+
+function Start-SnowLuma {
+  if (-not $snowDir) { W '[snowluma] 未配置 snowluma.homeDir，跳过'; return }
+  $exe = Join-Path $snowDir 'node.exe'
+  $main = Join-Path $snowDir 'index.mjs'
+  if (-not (Test-Path $exe) -or -not (Test-Path $main)) { W ('[snowluma] 找不到 ' + $snowDir); return }
+  try {
+    Start-Process -FilePath $exe -ArgumentList 'index.mjs' -WorkingDirectory $snowDir -WindowStyle Hidden -ErrorAction Stop
+    W '[snowluma] 检测到未运行，已拉起'
+    Start-Sleep -Seconds 8
+  } catch {
+    W ('[snowluma] 拉起失败：' + $_.Exception.Message)
+  }
+}
+
 try {
   while ($true) {
+    # SnowLuma：进程不存在才拉起；进程在但 3000 不开，多半是 QQ 掉线，不重复启动
+    if (-not (Test-Port 3000)) {
+      $snowProcs = @(Get-SnowProc)
+      if (-not $snowProcs.Count) {
+        Start-SnowLuma
+      } elseif (((Get-Date) - $lastSnowNote).TotalMinutes -ge 10) {
+        $lastSnowNote = Get-Date
+        W ('[snowluma] 进程在（' + $snowProcs.Count + ' 个）但 3000 未开，可能需要扫码')
+      }
+    }
+
     foreach ($svc in $services) {
       $name = $svc.Name
       $up = Test-Port $svc.Port

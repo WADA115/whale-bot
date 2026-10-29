@@ -56,6 +56,20 @@ const pick = [
   'test-group-classify.mjs',
   'test-group-history.mjs',
   'test-turn-log.mjs',
+  'test-dialogue-model.mjs',
+  'test-dialogue-gate.mjs',
+  'test-dialogue-thinker.mjs',
+  'test-dialogue-speaker.mjs',
+  'test-dialogue-pipeline.mjs',
+  'test-auth-core.mjs',
+  'test-orchestrator-autonomy.mjs',
+  'test-orchestrator-predictor.mjs',
+  'test-execution-gateway.mjs',
+  'test-orchestrator.mjs',
+  'test-orchestrator-standards.mjs',
+  'check-egress.mjs',
+  'check-panel.mjs',
+  'check-repo-hygiene.mjs',
   'test-dsh-detect.mjs'
 ].filter((f) => fs.existsSync(path.join(dir, f)));
 

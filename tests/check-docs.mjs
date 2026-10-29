@@ -19,9 +19,9 @@ const bad = (m) => { console.log('  ❌ ' + m); fails += 1; };
 
 // 1. 关键事实两边都要有
 const facts = [
-  ['临时密码 00000', /00000/],
+  ['临时密码 QqBot-Reset-2026', /QqBot-Reset-2026/],
   ['注册入口', /注册/],
-  ['密码长度 6', /6/],
+  ['密码长度 10', /10/],
   ['用户名长度 2', /2~24|2 ~ 24/]
 ];
 for (const [label, re] of facts) {

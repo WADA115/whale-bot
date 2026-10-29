@@ -7,6 +7,7 @@ import { ensureDirs, readRaw, readKept, readDigest, overview as growthOverview, 
   readWeekKept, readTotals, writeSnapshot, listSnapshots, readSnapshot, readEvolutions, writeEvolutions } from './src/growth-store.js';
 import { evolveOnce, evaluateStage } from './src/growth-evolve.js';
 import { buildLocalNarrative, buildNarrativePrompt, parseNarrative, isValidNarrative } from './src/growth-narrative.js';
+import { hashPassword, verifyPassword, needsRehash, newSalt, SCRYPT, createSessionStore, createThrottle } from './src/core/auth/index.mjs';
 
 // 小鲸鱼控制台：本地网页面板，统一管三个服务（SnowLuma / 桥接 / 语音识别）+ 守护。
 //
@@ -162,7 +163,9 @@ const BOOT_AT = Date.now();   // 本次面板启动时间
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const LOGIN_WINDOW_MS = 60 * 1000;
 const LOGIN_MAX_FAILS = 5;
-const sessions = new Map();
+const sessionStore = createSessionStore({ ttlMs: SESSION_TTL_MS });
+const sessions = sessionStore.sessions;
+const authThrottle = createThrottle({ windowMs: LOGIN_WINDOW_MS, maxFails: LOGIN_MAX_FAILS });
 
 // 启动令牌：给静默启动脚本用（它没法走登录流程）。只放行 start/stop/restart 三个接口。
 const LAUNCH_TOKEN_FILE = path.join(STATE, 'panel-launch-token');
@@ -177,10 +180,8 @@ if (!launchToken) {
     fs.chmodSync(LAUNCH_TOKEN_FILE, 0o600);
   } catch {}
 }
-const loginFails = new Map();
 const registerGate = new Map();
-// 开发者密钥失败退避：第 n 次失败等 2^(n-1)*600ms（上限 12 秒），成功后清零
-const devFailState = new Map();   // ip -> { count, until }
+// 开发者密钥失败退避由 authThrottle 统一管理（指数退避，上限 12 秒）。
 // 普通账户登录失败登记：只有被登记过的用户名才允许走"重置密码"
 const RESET_TICKETS = path.join(STATE, 'reset-tickets.json');
 function readTickets() {
@@ -259,16 +260,12 @@ function writeAuth(data) {
   try { fs.chmodSync(AUTH_FILE, 0o600); } catch {}
 }
 
-function hashPassword(password, salt) {
-  return crypto.scryptSync(String(password), String(salt), 32).toString('hex');
-}
-
 /** 创建账户；role 默认 user，第一个账户强制 developer。 */
 // 各类输入上限（字节/字符），统一在这里，前端提示同源
 // 临时密码：重置后统一设成这个，登录后强制改
-const TEMP_PASS = '00000';
+const TEMP_PASS = 'QqBot-Reset-2026';
 
-const LIMITS = { nickMin: 2, nickMax: 24, passMin: 6, passMax: 128, personaBytes: 20000, memItem: 300, accounts: 20 };
+const LIMITS = { nickMin: 2, nickMax: 24, passMin: 10, passMax: 128, personaBytes: 20000, memItem: 300, accounts: 20 };
 
 function createAccount(user, password, role = 'user') {
   const finalRole = role === 'developer' ? 'user' : role;
@@ -282,7 +279,7 @@ function createAccount(user, password, role = 'user') {
   if (auth.accounts.some((a) => userKey(a.user) === validated.key)) return { ok: false, msg: '这个用户名已经存在了' };
   // 开发者现在靠密钥登录，不再有开发者账户；这里创建的一律是普通账户
   const salt = crypto.randomBytes(16).toString('hex');
-  auth.accounts.push({ user: name, salt, hash: hashPassword(password, salt), role: finalRole, createdAt: Date.now() });
+  auth.accounts.push({ user: name, salt, hash: hashPassword(password, salt, SCRYPT), params: { ...SCRYPT }, algo: 'scrypt', role: finalRole, createdAt: Date.now() });
   writeAuth(auth);
   log(`已创建${finalRole === 'developer' ? '开发者' : '普通'}账户：${name}`);
   return { ok: true, msg: finalRole === 'developer' ? '开发者账户已创建' : '普通账户已创建', role: finalRole };
@@ -294,10 +291,18 @@ function verifyAccount(user, password) {
   if (!auth) return null;
   const acc = auth.accounts.find((a) => userKey(a.user) === userKey(user));
   if (!acc) return null;
-  const got = Buffer.from(hashPassword(password, acc.salt), 'hex');
-  const want = Buffer.from(acc.hash, 'hex');
-  if (got.length !== want.length) return null;
-  return crypto.timingSafeEqual(got, want) ? acc : null;
+  const ok = verifyPassword(password, acc.salt, acc.hash, acc.params);
+  if (!ok) return null;
+  // 旧哈希（无 params / N=16384）登录成功后升级到当前参数。
+  if (needsRehash(acc.params)) {
+    try {
+      acc.params = { ...SCRYPT };
+      acc.algo = 'scrypt';
+      acc.hash = hashPassword(password, acc.salt, SCRYPT);
+      writeAuth(auth);
+    } catch {}
+  }
+  return acc;
 }
 
 function deleteAccount(name) {
@@ -314,29 +319,12 @@ function deleteAccount(name) {
   return { ok: true, msg: '已删除 ' + name };
 }
 
-function parseCookies(req) {
-  const out = {};
-  for (const part of String(req.headers.cookie ?? '').split(';')) {
-    const idx = part.indexOf('=');
-    if (idx < 0) continue;
-    out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim());
-  }
-  return out;
-}
-
 function currentSession(req) {
-  const token = parseCookies(req).whale_session;
-  if (!token) return null;
-  const sess = sessions.get(token);
-  if (!sess) return null;
-  if (sess.exp < Date.now()) { sessions.delete(token); return null; }
-  return sess;
+  return sessionStore.current(req);
 }
 
 function issueSession(req, user, role = 'user') {
-  const token = crypto.randomBytes(24).toString('hex');
-  sessions.set(token, { user, role, exp: Date.now() + SESSION_TTL_MS, ip: maskIp(clientIp(req)) });
-  return token;
+  return sessionStore.issue(req, user, role, maskIp(clientIp(req)));
 }
 
 function authState(req) {
@@ -358,21 +346,13 @@ function authState(req) {
   };
 }
 
-/** 登录限速：同一 IP 每分钟最多 5 次失败。 */
+/** 登录限速：由 authThrottle 统一管理。 */
 function loginBlocked(ip) {
-  const rec = loginFails.get(ip);
-  if (!rec) return false;
-  if (Date.now() > rec.resetAt) { loginFails.delete(ip); return false; }
-  return rec.count >= LOGIN_MAX_FAILS;
+  return authThrottle.loginBlocked(ip);
 }
 
 function recordLoginFail(ip) {
-  const rec = loginFails.get(ip);
-  if (!rec || Date.now() > rec.resetAt) {
-    loginFails.set(ip, { count: 1, resetAt: Date.now() + LOGIN_WINDOW_MS });
-  } else {
-    rec.count += 1;
-  }
+  authThrottle.recordLoginFail(ip);
 }
 
 // ── 端口探测 ───────────────────────────────────────────────────────────────
@@ -1025,12 +1005,20 @@ async function status() {
   // 5099 是 SnowLuma 的 WebUI：进程活着但没登录时，3000 不开而 5099 开着
   const snowlumaUiUp = await probe(SNOWLUMA_UI_PORT);
 
-  const convs = Object.entries(ctx.convs ?? {}).map(([k, v]) => ({
-    key: k,
-    turns: (v.turns ?? []).length,
-    topic: v.topic || '',
-    pending: (v.pending ?? []).length
-  }));
+  const allowedGroups = new Set((cfg.allow?.groups ?? []).map(String));
+  const allowedPrivate = new Set((cfg.allow?.private ?? []).map(String));
+  const convs = Object.entries(ctx.convs ?? {})
+    .filter(([k]) => {
+      if (k.startsWith('group:')) return allowedGroups.has(k.slice(6));
+      if (k.startsWith('private:')) return allowedPrivate.has(k.slice(8)) || k === `private:${cfg.ownerQQ}`;
+      return true;
+    })
+    .map(([k, v]) => ({
+      key: k,
+      turns: (v.turns ?? []).length,
+      topic: v.topic || '',
+      pending: (v.pending ?? []).length
+    }));
 
   return {
     at: Date.now(),
@@ -1283,7 +1271,7 @@ const server = http.createServer(async (req, res) => {
       gate.count += 1;
       registerGate.set(ip, gate);
       const token = issueSession(req, String(body.user).trim(), 'user');
-      res.setHeader('set-cookie', `whale_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL_MS / 1000}`);
+      res.setHeader('set-cookie', sessionStore.cookie(token));
       log('普通账户自助注册:', maskIp(ip), String(body.user ?? '').trim());
       return send(res, 200, JSON.stringify({ ok: true, msg: '注册成功，已用普通账户登录', role: 'user' }));
     }
@@ -1300,29 +1288,25 @@ const server = http.createServer(async (req, res) => {
           log('开发者登录被拒（模式未激活）:', maskIp(ip));
           return send(res, 403, JSON.stringify({ ok: false, msg: '开发者模式未激活，需要用 scripts/ops/开发者模式.ps1 激活' }));
         }
-        const gate = devFailState.get(ip);
-        if (gate && gate.until > Date.now()) {
-          const waitMs = gate.until - Date.now();
-          log('开发者登录仍在退避中:', maskIp(ip), waitMs + 'ms');
+        const gate = authThrottle.devGate(ip);
+        if (gate.blocked) {
+          log('开发者登录仍在退避中:', maskIp(ip), gate.waitMs + 'ms');
           return send(res, 429, JSON.stringify({ ok: false, msg: '稍后再试' }));
         }
         const given = Buffer.from(String(body.devKey ?? '').trim());
         const want = Buffer.from(DEV_KEY);
         const okKey = given.length === want.length && crypto.timingSafeEqual(given, want);
         if (!okKey) {
-          recordLoginFail(ip);
-          const prev = devFailState.get(ip) ?? { count: 0, until: 0 };
-          const count = prev.count + 1;
-          const delayMs = Math.min(2 ** Math.min(count - 1, 5) * 600, 12000);
-          devFailState.set(ip, { count, until: Date.now() + delayMs });
-          log('开发者登录失败（密钥不对）:', maskIp(ip), '第 ' + count + ' 次，退避 ' + delayMs + 'ms');
-          await new Promise((r) => setTimeout(r, delayMs));
+          authThrottle.recordLoginFail(ip);
+          const back = authThrottle.recordDevFail(ip);
+          log('开发者登录失败（密钥不对）:', maskIp(ip), '第 ' + back.count + ' 次，退避 ' + back.delayMs + 'ms');
+          await new Promise((r) => setTimeout(r, back.delayMs));
           return send(res, 403, JSON.stringify({ ok: false, msg: '开发者密钥不对' }));
         }
-        devFailState.delete(ip);
-        loginFails.delete(ip);
+        authThrottle.clearDev(ip);
+        authThrottle.clearLogin(ip);
         const token = issueSession(req, '开发者', 'developer');
-        res.setHeader('set-cookie', `whale_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL_MS / 1000}`);
+        res.setHeader('set-cookie', sessionStore.cookie(token));
         log('开发者登录成功（密钥）:', maskIp(ip));
         return send(res, 200, JSON.stringify({ ok: true, msg: '已进入开发者模式', role: 'developer' }));
       }
@@ -1336,9 +1320,9 @@ const server = http.createServer(async (req, res) => {
         log('普通登录失败:', maskIp(ip), 'user=' + String(body.user ?? '').slice(0, 24));
         return send(res, 401, JSON.stringify({ ok: false, msg: hasAccounts ? '用户名或密码不对' : '还没有普通账户，请先用开发者密钥登录后创建' }));
       }
-      loginFails.delete(ip);
+      authThrottle.clearLogin(ip);
       const token = issueSession(req, acc.user, acc.role ?? 'user');
-      res.setHeader('set-cookie', `whale_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL_MS / 1000}`);
+      res.setHeader('set-cookie', sessionStore.cookie(token));
       log('普通登录成功:', acc.user, maskIp(ip), acc.mustChange ? '(临时密码，待改)' : '');
       return send(res, 200, JSON.stringify({
         ok: true,
@@ -1386,7 +1370,9 @@ const server = http.createServer(async (req, res) => {
       }
       const salt = crypto.randomBytes(16).toString('hex');
       acc.salt = salt;
-      acc.hash = hashPassword(TEMP_PASS, salt);
+      acc.hash = hashPassword(TEMP_PASS, salt, SCRYPT);
+      acc.params = { ...SCRYPT };
+      acc.algo = 'scrypt';
       acc.resetAt = Date.now();
       acc.mustChange = true;   // 登录后强制改密码
       writeAuth(auth);
@@ -1416,7 +1402,9 @@ const server = http.createServer(async (req, res) => {
       if (!acc) return send(res, 404, JSON.stringify({ ok: false, msg: '账户不存在' }));
       const salt = crypto.randomBytes(16).toString('hex');
       acc.salt = salt;
-      acc.hash = hashPassword(newPass, salt);
+      acc.hash = hashPassword(newPass, salt, SCRYPT);
+      acc.params = { ...SCRYPT };
+      acc.algo = 'scrypt';
       delete acc.mustChange;
       acc.changedAt = Date.now();
       writeAuth(auth);
@@ -1425,9 +1413,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') {
-      const token = parseCookies(req).whale_session;
-      if (token) sessions.delete(token);
-      res.setHeader('set-cookie', 'whale_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
+      sessionStore.revoke(req);
+      res.setHeader('set-cookie', sessionStore.clearCookie());
       return send(res, 200, JSON.stringify({ ok: true, msg: '已退出' }));
     }
 
@@ -1461,6 +1448,50 @@ const server = http.createServer(async (req, res) => {
   }
 
     if (url.pathname === '/api/status') return send(res, 200, JSON.stringify(await status()));
+
+    if (url.pathname === '/api/dialogue' && req.method === 'GET') {
+      const cfg = readJson(CFG_PATH, {});
+      const d = cfg.dialogue ?? {};
+      const dir = path.join(STATE, 'dialogue');
+      let rows = [];
+      try {
+        const files = fs.readdirSync(dir).filter((f) => /^turns-.*\.jsonl$/.test(f)).sort().slice(-2);
+        for (const f of files) {
+          const lines = fs.readFileSync(path.join(dir, f), 'utf8').split(/\r?\n/).filter(Boolean).slice(-200);
+          for (const line of lines) { try { rows.push(JSON.parse(line)); } catch {} }
+        }
+      } catch {}
+      const predictor = { flash: 0, pro: 0, total: 0 };
+      const counters = { turns: 0, replies: 0, standardsFail: 0, chime: 0, legacyBlocked: 0 };
+      for (const r of rows) {
+        counters.turns += 1;
+        if (r.action === 'reply' || r.trigger === 'speaker-live' || r.trigger === 'speaker-plan') counters.replies += 1;
+        if (r.action === 'chime') counters.chime += 1;
+        if (r.trigger === 'predictor-shadow' && r.prediction?.route) {
+          predictor.total += 1;
+          predictor[r.prediction.route] = (predictor[r.prediction.route] ?? 0) + 1;
+        }
+        if (r.trace?.standards && r.trace.standards.pass === false) counters.standardsFail += 1;
+      }
+      const recent = rows.slice(-8).reverse().map((r) => ({
+        ts: r.ts, trigger: r.trigger, action: r.action, chat: r.chat,
+        text: String(r.text ?? '').slice(0, 120), reason: r.reason,
+        prediction: r.prediction ?? null, spoken: r.spoken ?? null
+      }));
+      return send(res, 200, JSON.stringify({
+        ok: true,
+        config: {
+          useSpeaker: d.useSpeaker === true,
+          canaryGroups: Array.isArray(d.canaryGroups) ? d.canaryGroups : [],
+          canaryPrivate: d.canaryPrivate !== false,
+          thinker: d.thinker ?? {},
+          speaker: d.speaker ?? {},
+          predictorShadow: d.predictorShadow !== false,
+          legacyDialogDisabled: d.legacyDialogDisabled !== false
+        },
+        counters, predictor, recent
+      }));
+    }
 
     if (url.pathname === '/api/start' && req.method === 'POST') {
       const target = url.searchParams.get('target') ?? 'all';
@@ -1590,7 +1621,9 @@ const server = http.createServer(async (req, res) => {
         if (!acc) return send(res, 404, JSON.stringify({ ok: false, msg: '账户不存在' }));
         const salt = crypto.randomBytes(16).toString('hex');
         acc.salt = salt;
-        acc.hash = hashPassword(TEMP_PASS, salt);
+        acc.hash = hashPassword(TEMP_PASS, salt, SCRYPT);
+    acc.params = { ...SCRYPT };
+    acc.algo = 'scrypt';
         acc.mustChange = true;
         writeAuth(auth);
         log('开发者重置了普通账户密码:', user);

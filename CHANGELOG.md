@@ -19,6 +19,73 @@
 
 ### 安全
 
+## v0.6.0（2026-10-30）
+
+### Orchestrator 中央调度 + 四标准 + 提速 + 自主模块
+
+- 新增 `src/orchestrator/index.js`：gate/召回/心理/思维/表达/四标准统一事务
+- 新增四标准：grounding / consistency / clarity / autonomy，失败先修复，仍失败不发
+- 新增 `src/orchestrator/autonomy.js`：驱动 + 预算 + 理由，不做随机插话
+- 召回与心理评估并行；直接 @ 跳过 gate；Trace 记录各阶段耗时
+- pipeline 变成 Orchestrator 适配器，bridge 不再直接做对话决策
+- 记忆上下文（buildContextBlock）与心情标签接入 Orchestrator
+- 新增测试：四标准 12 项、Orchestrator 4 项、自主 4 项
+
+## v0.5.18（2026-10-30）
+
+### T2 补全：跳过消息也走新链路 + 记忆/社交闭环
+
+- 旧 gate 判否的消息也进 gate → thinker → speaker；有新计划就直接发送
+- 新链路发送后补 `ctxEngine.markAnswered`、记忆提取、会话压缩
+- 新增 SnowLuma 守护：watchdog 每 30 秒检查，进程不在才拉起；进程在但 3000 未开只提示扫码
+- `sendSpeakerPlan` 修正事件写入与记忆调用
+
+## v0.5.17（2026-10-30）
+
+### T2：旧群真正切到 Speaker 发送
+
+- 新增 `runDialoguePipeline`：gate → thinker → speaker 一次编排
+- 旧群 `978815624` 开启 `dialogue.useSpeaker`：新链路产出计划就直接发送，不再走 DSH 旧回复
+- 新链路失败/无计划 → 回退旧 DSH，不会静默丢消息
+- 新增 `test-dialogue-pipeline`（3 项）
+
+## v0.5.16（2026-10-30）
+
+### T1：Speaker 吃 thought（影子）
+
+- 新增 `src/dialogue/speaker.js`：thought + 人格 → 1~3 条气泡，只产出不发送
+- 思维层判 shouldReply=true 时，再跑一次 flash speaker；结果写 turn log 的 `spoken`
+- `callChat` 支持 temperature（speaker 0.8）
+- 新增 `test-dialogue-speaker`（6 项）
+
+## v0.5.15（2026-10-30）
+
+### T0：思维层（deepseek-v4-pro）影子
+
+- 新增 `src/dialogue/thinker.js`：线程 + 人格 → thought packet（shouldReply/target/intent/keyPoints/emotion/constraints/confidence）
+- `dialogue.shadowThinker` 开启后，新 gate 判候选时再跑一次 pro，结果只写 turn log，不改变回复
+- 思维包不发给 QQ，只在日志/面板可见
+- 新增 `test-dialogue-thinker`（6 项）
+
+## v0.5.14（2026-10-30）
+
+### P2：新 gate + 影子模式
+
+- 新增 `src/dialogue/gate.js`：规则先筛（@自己/名字/其他 bot/媒体/空消息），剩余交给 flash
+- 新增 `src/dialogue/model.js`：gate 与后续 agent 共用的 chat 调用
+- 开启 `dialogue.shadow`：旧逻辑照常发送，新 gate 只写 turn log 的 `shadow` 字段（不改变行为）
+- 新增 `test-dialogue-gate`（9 项）
+
+## v0.5.13（2026-10-30）
+
+### P1 对话模型：事件/线程/动作契约
+
+- 新增 src/dialogue/events.js：消息事件落盘
+- 新增 src/dialogue/thread-store.js：最近事件、参与者、开放问题、机器人上一轮
+- 新增 src/dialogue/actions.js：reply/skip/wait/react 契约
+- bridge 入站/出站写事件，turn log 带 contract 字段
+- 新增 	est-dialogue-model（11 项）
+
 ## v0.5.12（2026-10-30）
 
 ### P0 对话系统重做：TurnLog + 黄金集 + 回放
