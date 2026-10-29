@@ -43,6 +43,7 @@ import { guardIncomingText, buildPersonaAnchor } from './persona-guard.js';
 import { buildClosedAgentPrompt } from './prompt/assemble.js';
 import { canChime, rollChime } from './chime.js';
 import { parseClassifyAnswer } from './group-classify.js';
+import { formatRecentLine, formatCurrentLine } from './group-history.js';
 import { SILENT_MARKER, SPACE_SPLIT_HINT, DIRECTION_HINT, buildBatchPromptText, buildProbePromptText, buildActiveExitPromptText, buildProactivePromptText } from './prompt/context.js';
 import { selfIdentityText, buildWakeReasonSuffix } from './prompt/wake.js';
 import { renderWakePromptV2 } from './prompt/wake-render.js';
@@ -2046,16 +2047,22 @@ process.on('exit', () => { for (const p of pluginList) { try { p.host?.kill?.();
 const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制插话密度，不被普通回复重置）
   const classifyRate = { windowStart: 0, count: 0 }; // 判断器每分钟限流
   function getGroupRecentLines(groupId) {
-    return (groupRecentLines.get(String(groupId)) || []).map((l) => `${l.name}: ${l.text}`);
+    return (groupRecentLines.get(String(groupId)) || []).map((l) => formatRecentLine(l));
   }
-  function rememberGroupLine(groupId, name, text) {
+  function rememberGroupLine(groupId, name, text, meta = {}) {
     const buf = groupRecentLines.get(String(groupId)) || [];
-    buf.push({ name: String(name || '群友').slice(0, 20), text: String(text || '').slice(0, 160) });
-    while (buf.length > 10) buf.shift();
+    buf.push({
+      name: String(name || '群友').slice(0, 20),
+      text: String(text || '').slice(0, 160),
+      at: Array.isArray(meta.at) ? meta.at.slice(0, 3) : [],
+      replyTo: meta.replyTo ? String(meta.replyTo).slice(0, 20) : '',
+      self: !!meta.self
+    });
+    while (buf.length > 30) buf.shift();
     groupRecentLines.set(String(groupId), buf);
   }
 
-  async function classifyGroupMessage({ text, senderName, historyLines, cfg }) {
+  async function classifyGroupMessage({ text, senderName, historyLines, cfg, atNames = [] }) {
     const smart = cfg.role?.smartTrigger ?? {};
     // config.json 的 webSearch 段要单独加载（loadConfig 不带这段）。
     // resolveSearchApiKey 返回的是 { key, source }，不是字符串。
@@ -2088,12 +2095,12 @@ const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制
 - 群里只有一两个人在说话、像是随手抛给群里的话（"你在干嘛""说话啊""这个怎么看"）→ 是
 - 明确在跟某个群友对话（点名了别人、或明显在回答别人的问题）→ 否
 - 消息里 @ 了别人、或叫的是别人的名字（包括其他机器人、别的“鱼”）→ 否；只有 @你、叫你「${botName}」、或追问你刚说的话 → 是
-- 最近群聊里以「${botName}:」开头的行是你自己说过的话；别人接着这些行追问/催/答 → 是
+- 最近群聊里带「[你]」或「${botName}：」的行是你自己说过的话；别人接着这些行追问/催/答 → 是
 - 两个人明显在一问一答、内容与机器人无关（约时间、聊别的游戏、互相接梗）→ 否
 - 纯表情、图片、刷屏、无意义字符 → 否
-- 只有明显是别人之间的私聊内容时才判 否；轻微不确定倾向判 是（宁可多接一句，也不要像没听见）`;
-    const history = (historyLines || []).slice(-8).join('\n');
-    const user = `${history ? `最近群聊：\n${history}\n\n` : ''}最新一条 — ${senderName}: ${body}`;
+- 只有明显是别人之间的私聊内容时才判 否；轻微不确定倾向判 是（宁可多接一句，也不要像没听见）${(() => { const others = Array.isArray(smart.otherBots) ? smart.otherBots.filter(Boolean).slice(0, 10) : []; return others.length ? `\n- 群里其他机器人/账号：${others.join('、')}；@它们、它们说的话都不算叫你。` : ''; })()}`;
+    const history = (historyLines || []).slice(-20).join('\n');
+    const user = `${history ? `最近群聊：\n${history}\n\n` : ''}${formatCurrentLine({ senderName, at: atNames, text: body })}`;
     try {
       const res = await fetch(`${baseURL}/chat/completions`, {
         method: 'POST',
@@ -11706,9 +11713,19 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
         const resolved = await resolveAtName(event.user_id);
         if (resolved) senderName = resolved;
       } catch {}
+      // 当前消息 @ 了谁（用于判断“在叫谁”）
+      const atNames = [];
+      const atQqs = [...new Set(segs.filter((x) => x?.type === 'at').map((x) => String(x?.data?.qq ?? '')).filter(Boolean))];
+      for (const qq of atQqs) {
+        if (qq === selfId) { atNames.push('你'); continue; }
+        let nm = '';
+        try { nm = await resolveAtName(qq); } catch {}
+        atNames.push(nm ? String(nm).slice(0, 20) : 'QQ' + qq);
+        if (atNames.length >= 3) break;
+      }
       // 先取历史快照，再把当前这句记进去（避免自己和自己比）
       const historyLines = getGroupRecentLines(id);
-      rememberGroupLine(id, senderName, plainText || '[非文字消息]');
+      rememberGroupLine(id, senderName, plainText || '[非文字消息]', { at: atNames });
       // 【本地适配 2026-10-25】纯图片/表情/语音的消息没有文字，判断器拿不到输入会一律跳过
       // （实测：发图被当成"不是在跟我说"直接丢掉）。这类消息一律接住，让模型自己看图。
       const hasMediaSeg = segs.some((s) => ['image', 'mface', 'record', 'video', 'file'].includes(String(s?.type ?? '')));
@@ -11736,7 +11753,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
           globalThis.__smartTriggerLogged = true;
           log(`[group] 智能判断已启用（模型 ${cfg.role?.smartTrigger?.model || 'deepseek-flash'}，每分钟上限 ${cfg.role?.smartTrigger?.maxPerMinute ?? 20}）`);
         }
-        const verdict = await classifyGroupMessage({ text: plainText, senderName, historyLines, cfg });
+        const verdict = await classifyGroupMessage({ text: plainText, senderName, historyLines, cfg, atNames });
         if (!verdict.addressed) {
           // 【本地适配 2026-10-25】判否也留一点随机插话的余地：
           // 真人不会只回被点名的话，偶尔会自己接一句。频率靠这两个旋钮控制：
