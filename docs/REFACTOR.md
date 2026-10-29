@@ -16,6 +16,7 @@
 | `src/plugins/runtime.js` | 插件扫描/验证/子进程加载/钩子调度 | `tests/test-plugin-runtime.mjs`（5 项） |
 | `src/dsh/queue.js` | DSH 投递串行队列、状态、drain/drainAll | `tests/test-dsh-queue.mjs`（6 项） |
 | `src/dsh/deliver.js` | 唤醒快照后缀、文本/图片 content parts、错误脱敏 | `tests/test-dsh-deliver.mjs`（6 项） |
+| `src/dsh/deliver-run.js` | 单条 prompt 投递编排（模式/唤醒检查、离线排队、建会话、退场、重试） | `tests/test-deliver-run.mjs`（7 项） |
 
 `bridge.js` 现在只负责收集数据，再交给拼装函数。
 

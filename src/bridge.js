@@ -34,6 +34,7 @@ import { createPluginHost } from './plugin-host.js';
 import { loadPlugins as loadPluginsFromDir, runPluginHook as runPluginHookOn } from './plugins/runtime.js';
 import { createPromptQueue } from './dsh/queue.js';
 import { appendWakeSnapshot, buildDeliveryContent, deliveryErrorText } from './dsh/deliver.js';
+import { deliverPromptNow as runDeliverPromptNow } from './dsh/deliver-run.js';
 import { clampLevel, autoEmotionLevel, emotionPrompt } from './emotion.js';
 import { pickKaomoji } from './kaomoji.js';
 import { readInfluence, emotionWeightWithGrowth, memoryBudgetWithGrowth, chanceWithGrowth } from './growth-influence.js';
@@ -10108,92 +10109,36 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     return buildProactivePromptText({ roleHint, contextBlock: buildContextBlock(key) });
   }
 
-  // 实际的 DSH prompt 投递（不再直接对外暴露，统一走 promptQueues 串行队列）。
   async function deliverPromptNow(key, promptText, opts = {}) {
-    if (!isSessionAllowedInCurrentMode(key)) throw new Error(`当前模式不允许会话 ${key}`);
-    // Recheck queued wakes at dispatch time: no model call while paused/disabled
-    // and no reserved2 prompt leaking into an ordinary chat after a mode switch.
-    const wakeBlocked = () => opts.wakeReason && (!socialWakeAllowed() || socialV2.paused || cfg.socialV2?.enabled === false);
-    const skipWake = () => {
-      pendingWakeKeys.delete(key);
-      disarmPendingWakeLease(key);
-      return { ok: true, skipped: true };
-    };
-    if (wakeBlocked()) return skipWake();
-    if (!dshReady) {
-      const items = queued.get(key) ?? [];
-      if (items.length >= QUEUE_MAX) {
-        items.shift();
-        log(`队列满（${QUEUE_MAX}），丢弃最旧消息 (${key})`);
-      }
-      items.push({ promptText, farewell: !!opts.farewell, silent: !!opts.silent, media: opts.media ?? [], wakeReason: opts.wakeReason });
-      queued.set(key, items);
-      return { ok: true, queued: true };
-    }
-    let sessionId;
-    try {
-      sessionId = await ensureSession(key);
-    } catch (error) {
-      if (String(error?.message ?? error).includes('会话创建期间已重置')) {
-        enqueueForRetry(key, promptText, opts);
-        return { ok: true, retried: true };
-      }
-      throw error;
-    }
-    let wakeState;
-    let wakeToken;
-    let wakeSnapshot;
-    if (opts.wakeReason) {
-      if (wakeBlocked()) return skipWake();
-      // Build only after session creation: retries may rotate the token, and an
-      // offline queue may have received more messages since this wake was queued.
-      wakeState = getSocialV2State(key);
-      wakeToken = wakeState.agentToken;
-      promptText = buildWakePromptV2(key, opts.wakeReason);
-      wakeSnapshot = buildWakeSnapshotV2(key);
-      promptText = appendWakeSnapshot(promptText, wakeSnapshot);
-    }
-    const content = await buildDeliveryContent({
-      promptText,
-      media: opts.media,
+    return runDeliverPromptNow(key, promptText, opts, {
+      isSessionAllowedInCurrentMode,
+      socialWakeAllowed,
+      socialV2,
+      cfg,
+      pendingWakeKeys,
+      disarmPendingWakeLease,
+      dshReady,
+      queued,
+      queueMax: QUEUE_MAX,
+      log,
+      ensureSession,
+      enqueueForRetry,
+      getSocialV2State,
+      buildWakePromptV2,
+      buildWakeSnapshotV2,
       withSlangContext,
-      resolveMediaList
+      resolveMediaList,
+      isCurrentSession,
+      exitingSessions: social.exitingSessions,
+      apiPrompt: (args) => api.sessions.prompt(args),
+      shouldAuditKey,
+      sensitiveRe: SENSITIVE_RE,
+      sendToQQ,
+      canonicalV2Key,
+      noteModelMessagesV2,
+      socialToolsModeAllowed,
+      auditAndSend
     });
-    // 媒体解析成功后再标记退场，避免解析异常时残留退场标记。
-    if (!isCurrentSession(key, sessionId)) throw new Error('投递前会话已重置或权限已变化');
-    if (opts.farewell) social.exitingSessions.add(sessionId);
-    let accepted;
-    try {
-      accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content });
-    } catch (error) {
-      if (opts.farewell) social.exitingSessions.delete(sessionId);
-      throw error;
-    }
-    if (!accepted.result.ok) {
-      if (opts.farewell) social.exitingSessions.delete(sessionId);
-      const errText = `${accepted.result.error.code}: ${accepted.result.error.message}`;
-      const safeErrText = deliveryErrorText({
-        code: accepted.result.error.code,
-        message: accepted.result.error.message,
-        shouldRedact: shouldAuditKey(key) && SENSITIVE_RE.test(errText)
-      });
-      if (!opts.silent) await sendToQQ(key, `⚠️ 消息未被接受：${safeErrText}`);
-      return { ok: false, error: safeErrText };
-    }
-    if (wakeSnapshot && isCurrentSession(key, sessionId)
-        && socialV2.conversations.get(canonicalV2Key(key)) === wakeState
-        && wakeState.agentToken === wakeToken) {
-      // Acceptance grants visibility, never acknowledgement. New arrivals and
-      // rejected/stale deliveries must not be cleared by an old cursor.
-      noteModelMessagesV2(wakeState, [...wakeSnapshot.messages, ...wakeSnapshot.recent]);
-    }
-    if (accepted.result.value.command?.text && !opts.silent && !socialToolsModeAllowed()) {
-      if (opts.farewell) social.exitingSessions.delete(sessionId);
-      await auditAndSend(key, mdToPlain(accepted.result.value.command.text));
-    } else if (accepted.result.value.command?.text && opts.silent && opts.farewell) {
-      social.exitingSessions.delete(sessionId);
-    }
-    return { ok: true };
   }
 
   const promptQueue = createPromptQueue({
