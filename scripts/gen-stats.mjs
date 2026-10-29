@@ -29,12 +29,13 @@ let changed = 0;
 for (const [file, text] of blocks) {
   const p = path.join(root, file);
   let s = fs.readFileSync(p, 'utf8');
+  const eol = s.includes('\r\n') ? '\r\n' : '\n';
   const re = /(<!-- STATS:OFFLINE:START -->)[\s\S]*?(<!-- STATS:OFFLINE:END -->)/;
   if (!re.test(s)) {
     console.error(`❌ ${file} 缺少 STATS:OFFLINE 标记块`);
     process.exit(1);
   }
-  const next = s.replace(re, `$1\n${text}\n$2`);
+  const next = s.replace(re, (_m, start, end) => `${start}${eol}${text}${eol}${end}`);
   if (next !== s) {
     changed += 1;
     if (!checkOnly) fs.writeFileSync(p, next, 'utf8');
