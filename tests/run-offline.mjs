@@ -55,6 +55,7 @@ const pick = [
   'test-chime.mjs',
   'test-group-classify.mjs',
   'test-group-history.mjs',
+  'test-turn-log.mjs',
   'test-dsh-detect.mjs'
 ].filter((f) => fs.existsSync(path.join(dir, f)));
 

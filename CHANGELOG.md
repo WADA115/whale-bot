@@ -19,6 +19,16 @@
 
 ### 安全
 
+## v0.5.12（2026-10-30）
+
+### P0 对话系统重做：TurnLog + 黄金集 + 回放
+
+- 新增 src/dialogue/turn-log.js：每次群聊判断记录 trigger/gate/action/reason/latency
+- 新增 scripts/dialogue-golden.mjs、scripts/dialogue-replay.mjs
+- 只保留旧群 978815624 白名单，移出新群 344739750
+- 新增 docs/DIALOGUE-REDESIGN.md（B 混合编排方案）
+- 新增 	est-turn-log（5 项）
+
 ## v0.5.11（2026-10-30）
 
 ### 判断器喂完整线程 + 其他 bot 身份

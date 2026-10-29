@@ -44,6 +44,7 @@ import { buildClosedAgentPrompt } from './prompt/assemble.js';
 import { canChime, rollChime } from './chime.js';
 import { parseClassifyAnswer } from './group-classify.js';
 import { formatRecentLine, formatCurrentLine } from './group-history.js';
+import { appendTurnLog } from './dialogue/turn-log.js';
 import { SILENT_MARKER, SPACE_SPLIT_HINT, DIRECTION_HINT, buildBatchPromptText, buildProbePromptText, buildActiveExitPromptText, buildProactivePromptText } from './prompt/context.js';
 import { selfIdentityText, buildWakeReasonSuffix } from './prompt/wake.js';
 import { renderWakePromptV2 } from './prompt/wake-render.js';
@@ -2046,6 +2047,10 @@ process.on('exit', () => { for (const p of pluginList) { try { p.host?.kill?.();
   const lastBotReplyAt = new Map(); // key -> 上次机器人发言时间
 const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制插话密度，不被普通回复重置）
   const classifyRate = { windowStart: 0, count: 0 }; // 判断器每分钟限流
+  function recordDialogueTurn(entry) {
+    try { appendTurnLog(entry, { dir: path.join(STATE_DIR, 'dialogue') }); } catch {}
+  }
+
   function getGroupRecentLines(groupId) {
     return (groupRecentLines.get(String(groupId)) || []).map((l) => formatRecentLine(l));
   }
@@ -11753,7 +11758,10 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
           globalThis.__smartTriggerLogged = true;
           log(`[group] 智能判断已启用（模型 ${cfg.role?.smartTrigger?.model || 'deepseek-flash'}，每分钟上限 ${cfg.role?.smartTrigger?.maxPerMinute ?? 20}）`);
         }
+        const gateStartedAt = Date.now();
         const verdict = await classifyGroupMessage({ text: plainText, senderName, historyLines, cfg, atNames });
+        const gate = { addressed: verdict.addressed, reason: verdict.reason, latencyMs: Date.now() - gateStartedAt };
+        let gateAction = verdict.addressed ? 'reply' : 'skip';
         if (!verdict.addressed) {
           // 【本地适配 2026-10-25】判否也留一点随机插话的余地：
           // 真人不会只回被点名的话，偶尔会自己接一句。频率靠这两个旋钮控制：
@@ -11766,15 +11774,18 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
           // 否则聊得越热（回得越多）越永远插不上话。
           const gapOk = canChime({ lastChimeAt: lastChimeAt.get(key) ?? 0, minGapMs: minGap });
           if (gapOk && rollChime({ probability: chimeP }) && plainText) {
+            gateAction = 'chime';
             lastChimeAt.set(key, Date.now());
             log(`群聊随机插话 ${key}（判定「否」但抽中 ${Math.round(chimeP * 100)}%｜${plainText.slice(0, 30)}）`);
           } else {
+            recordDialogueTurn({ chat: key, trigger: 'smart-gate', sender: senderName, text: plainText, at: atNames, gate, action: 'skip', reason: verdict.reason || '否' });
             log(`群聊判断「不是在跟我说」跳过 ${key}（${verdict.reason || '?'}｜${plainText.slice(0, 30)}）`);
             return;
           }
         } else {
           log(`群聊判断「在跟我说」接住 ${key}（${verdict.reason || '?'}）`);
         }
+        recordDialogueTurn({ chat: key, trigger: 'smart-gate', sender: senderName, text: plainText, at: atNames, gate, action: gateAction, reason: verdict.reason || '' });
       }
     }
     // textContent 带引用对象信息，供 DSH 判断“这句话在对谁说”；
