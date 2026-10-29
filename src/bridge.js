@@ -41,6 +41,7 @@ import { readInfluence, emotionWeightWithGrowth, memoryBudgetWithGrowth, chanceW
 import { reviewNarrative } from './narrative-guard.js';
 import { guardIncomingText, buildPersonaAnchor } from './persona-guard.js';
 import { buildClosedAgentPrompt } from './prompt/assemble.js';
+import { canChime, rollChime } from './chime.js';
 import { SILENT_MARKER, SPACE_SPLIT_HINT, DIRECTION_HINT, buildBatchPromptText, buildProbePromptText, buildActiveExitPromptText, buildProactivePromptText } from './prompt/context.js';
 import { selfIdentityText, buildWakeReasonSuffix } from './prompt/wake.js';
 import { renderWakePromptV2 } from './prompt/wake-render.js';
@@ -2040,7 +2041,8 @@ process.on('exit', () => { for (const p of pluginList) { try { p.host?.kill?.();
   // 用便宜的 flash 模型做二分类，省掉主模型一次完整回合；
   // 判断依据里带最近几条群聊上下文，不然"它怎么不动了"这种话没法判断指向谁。
   const groupRecentLines = new Map(); // groupId -> [{ name, text }]
-  const lastBotReplyAt = new Map(); // key -> 上次机器人发言时间（随机插话要据此控制密度）
+  const lastBotReplyAt = new Map(); // key -> 上次机器人发言时间
+const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制插话密度，不被普通回复重置）
   const classifyRate = { windowStart: 0, count: 0 }; // 判断器每分钟限流
   function getGroupRecentLines(groupId) {
     return (groupRecentLines.get(String(groupId)) || []).map((l) => `${l.name}: ${l.text}`);
@@ -11747,8 +11749,11 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
           let chimeP = Number(cfg.role?.randomChimeProbability ?? 0.18);
           try { const gi = cfg.role?.growth?.speak === false ? null : readInfluence(STATE_DIR); if (gi) chimeP = chanceWithGrowth(chimeP, gi.initiative); } catch {}
           const minGap = Number(cfg.role?.randomChimeMinGapMs ?? 7 * 60 * 1000);
-          const gapOk = Date.now() - (lastBotReplyAt.get(key) ?? 0) > minGap;
-          if (gapOk && chimeP > 0 && Math.random() < chimeP && plainText) {
+          // 只按「上次插话」算密度：机器人正常回复不应把插话冷却重置，
+          // 否则聊得越热（回得越多）越永远插不上话。
+          const gapOk = canChime({ lastChimeAt: lastChimeAt.get(key) ?? 0, minGapMs: minGap });
+          if (gapOk && rollChime({ probability: chimeP }) && plainText) {
+            lastChimeAt.set(key, Date.now());
             log(`群聊随机插话 ${key}（判定「否」但抽中 ${Math.round(chimeP * 100)}%｜${plainText.slice(0, 30)}）`);
           } else {
             log(`群聊判断「不是在跟我说」跳过 ${key}（${verdict.reason || '?'}｜${plainText.slice(0, 30)}）`);

@@ -52,6 +52,7 @@ const pick = [
   'test-dsh-deliver.mjs',
   'test-deliver-run.mjs',
   'test-user-id.mjs',
+  'test-chime.mjs',
   'test-dsh-detect.mjs'
 ].filter((f) => fs.existsSync(path.join(dir, f)));
 
