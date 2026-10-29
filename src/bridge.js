@@ -2087,7 +2087,9 @@ const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制
 - 在追问它刚说过的话、或明显接着它开的头 → 是
 - 群里只有一两个人在说话、像是随手抛给群里的话（"你在干嘛""说话啊""这个怎么看"）→ 是
 - 明确在跟某个群友对话（点名了别人、或明显在回答别人的问题）→ 否
-- 两个人明显在一问一答、内容与机器人无关（约时间、聊别的游戏）→ 否
+- 消息里 @ 了别人、或叫的是别人的名字（包括其他机器人、别的“鱼”）→ 否；只有 @你、叫你「${botName}」、或追问你刚说的话 → 是
+- 最近群聊里以「${botName}:」开头的行是你自己说过的话；别人接着这些行追问/催/答 → 是
+- 两个人明显在一问一答、内容与机器人无关（约时间、聊别的游戏、互相接梗）→ 否
 - 纯表情、图片、刷屏、无意义字符 → 否
 - 只有明显是别人之间的私聊内容时才判 否；轻微不确定倾向判 是（宁可多接一句，也不要像没听见）`;
     const history = (historyLines || []).slice(-8).join('\n');
@@ -12741,7 +12743,10 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
                   log(`agent 回复 (${key}) ${plain.length} 字`);
                   appendActivity(`${key} agent 回复：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
                   if (key.startsWith('group:')) {
-                    try { rememberGroupLine(key.slice(6), selfDisplayName || cfg.role?.displayName || '鱼鱼', plain); } catch {}
+                    try {
+                      rememberGroupLine(key.slice(6), selfDisplayName || cfg.role?.displayName || '鱼鱼', plain);
+                      appendRecentMessage(key, selfDisplayName || cfg.role?.displayName || '鱼鱼', plain, plain, false, false, [], '');
+                    } catch {}
                   }
                   lastBotReplyAt.set(key, Date.now());
                   // 回了话 → 清掉该会话的"待回应"（语境引擎据此知道对方的问题被接住了）
