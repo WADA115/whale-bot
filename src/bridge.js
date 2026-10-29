@@ -12740,6 +12740,9 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
                   steerInflight.delete(key);
                   log(`agent 回复 (${key}) ${plain.length} 字`);
                   appendActivity(`${key} agent 回复：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
+                  if (key.startsWith('group:')) {
+                    try { rememberGroupLine(key.slice(6), selfDisplayName || cfg.role?.displayName || '鱼鱼', plain); } catch {}
+                  }
                   lastBotReplyAt.set(key, Date.now());
                   // 回了话 → 清掉该会话的"待回应"（语境引擎据此知道对方的问题被接住了）
                   try { ctxEngine.markAnswered(key, {}); } catch {}
