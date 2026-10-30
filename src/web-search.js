@@ -28,6 +28,8 @@ import https from 'node:https';
 import { URL } from 'node:url';
 import YAML from 'js-yaml';
 import { resolveSafeAddresses, safeFetch } from './safe-fetch.js';
+import { searchWeb as deepseekToolSearch } from './web/deepseek-tools.js';
+import { readSecret } from './secrets.js';
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com/anthropic/v1';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
@@ -69,6 +71,7 @@ export function loadSearchConfig(root) {
   const provider = raw.provider === 'deepseek' || raw.provider === 'bing' ? raw.provider : 'auto';
   return {
     ...defaultConfig,
+    root,
     provider,
     apiKey: typeof raw.apiKey === 'string' ? raw.apiKey.trim() : '',
     apiKeyEnv: typeof raw.apiKeyEnv === 'string' && raw.apiKeyEnv.trim() ? raw.apiKeyEnv.trim() : DEFAULT_API_KEY_ENV,
@@ -109,6 +112,8 @@ export function resolveSearchApiKey(config) {
   const envName = String(config?.apiKeyEnv || DEFAULT_API_KEY_ENV);
   const fromEnv = String(process.env[envName] ?? '').trim();
   if (fromEnv) return { key: fromEnv, source: 'env' };
+  const fromSecret = readSecret(config?.root ?? process.cwd());
+  if (fromSecret) return { key: fromSecret, source: 'secret' };
   const fromDsh = readDshCredential(envName);
   if (fromDsh) return { key: fromDsh, source: 'dsh-credentials' };
   return { key: '', source: 'none' };
@@ -285,60 +290,27 @@ async function postJson(url, addresses, options) {
   throw lastError ?? new Error('联网搜索请求失败');
 }
 
-/** DeepSeek 原生联网搜索。失败时抛出带稳定 code 的错误，由调用方决定是否回退。 */
+/** DeepSeek 原生联网搜索（Search API /v1/tools/search）。失败时抛出带稳定 code 的错误。 */
 export async function deepseekSearch(query, config = defaultConfig) {
   const { key } = resolveSearchApiKey(config);
   if (!key) {
     throw Object.assign(new Error('没有可用的 DeepSeek API key'), { code: 'NO_KEY' });
   }
-  const baseURL = config.baseURL || process.env.DEEPSEEK_SEARCH_BASE_URL || DEFAULT_BASE_URL;
-  const { url, addresses } = await validateSearchEndpoint(baseURL);
-  const endpoint = new URL(`${url.toString().replace(/\/+$/, '')}/messages`);
-  const body = JSON.stringify({
-    model: config.model || DEFAULT_MODEL,
-    max_tokens: config.maxTokens || defaultConfig.maxTokens,
-    messages: [{
-      role: 'user',
-      content: [{ type: 'text', text: `Perform a web search for the query: ${query}` }]
-    }],
-    tools: [{
-      type: SEARCH_TOOL_TYPE,
-      name: 'web_search',
-      max_uses: config.maxUses || defaultConfig.maxUses
-    }]
+  const results = await deepseekToolSearch(query, {
+    count: config.maxResults || defaultConfig.maxResults,
+    needContent: false,
+    config: {
+      apiKey: key,
+      baseURL: config.baseURL || DEFAULT_BASE_URL,
+      timeoutMs: config.timeoutMs || DEFAULT_TIMEOUT_MS
+    }
   });
-  const response = await postJson(endpoint, addresses, {
-    headers: {
-      'x-api-key': key,
-      authorization: `Bearer ${key}`,
-      'anthropic-version': DEFAULT_API_VERSION,
-      'content-type': 'application/json',
-      accept: 'application/json',
-      'user-agent': 'qq-bridge-web-search/0.2.0'
-    },
-    body,
-    timeoutMs: config.timeoutMs || DEFAULT_TIMEOUT_MS
-  });
-  if (response.status < 200 || response.status >= 300) {
-    // 只回显 HTTP 状态与主体里的简短错误，绝不拼接请求头（里面是 key）。
-    let detail = '';
-    try {
-      const parsed = JSON.parse(response.text);
-      const message = typeof parsed?.error === 'string' ? parsed.error : parsed?.error?.message ?? parsed?.message;
-      if (typeof message === 'string') detail = message.slice(0, 200);
-    } catch {}
-    throw Object.assign(
-      new Error(`DeepSeek 搜索接口 HTTP ${response.status}${detail ? `：${detail}` : ''}`),
-      { code: 'HTTP_ERROR', status: response.status }
-    );
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(response.text);
-  } catch {
-    throw Object.assign(new Error('DeepSeek 搜索接口返回了无法解析的响应'), { code: 'BAD_BODY' });
-  }
-  return mapDeepSeekResponse(parsed, config.maxResults || defaultConfig.maxResults);
+  return results.map((r) => ({
+    title: r.title,
+    url: r.url,
+    ...(r.snippet || r.summary ? { snippet: (r.snippet || r.summary).slice(0, 500) } : {}),
+    ...(r.date ? { publishedAt: String(r.date).slice(0, 40) } : {})
+  }));
 }
 
 function decodeEntities(text) {

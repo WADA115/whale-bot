@@ -15,6 +15,7 @@
 // 这样换账号后无需手改任何配置，工具自动跟上。
 import fs from 'node:fs';
 import path from 'node:path';
+import { readSecret, writeSecret } from './secrets.js';
 
 /**
  * SnowLuma 主目录的常见位置。
@@ -203,13 +204,24 @@ export function persistSnowLumaEndpoint(cfgPath, { accessToken, wsUrl, httpUrl }
   const cur = cfg.snowluma ?? {};
   const next = { ...cur };
   const changed = {};
+  const root = path.dirname(cfgPath);
+  if (accessToken) {
+    const previousSecret = readSecret(root, 'snowlumaAccessToken');
+    if (String(previousSecret) !== String(accessToken)) {
+      writeSecret(root, 'snowlumaAccessToken', accessToken);
+      changed.accessToken = { from: 'secret', to: 'secret-updated' };
+    }
+    if (String(cur.accessToken ?? '') !== '') {
+      next.accessToken = '';
+      changed.accessToken = changed.accessToken ?? { from: 'config', to: 'secret' };
+    }
+  }
   const consider = (key, value) => {
     if (value === undefined || value === null || value === '') return;
     if (String(cur[key] ?? '') === String(value)) return;
     changed[key] = { from: cur[key] ?? null, to: value };
     next[key] = value;
   };
-  consider('accessToken', accessToken);
   consider('wsUrl', wsUrl);
   consider('httpUrl', httpUrl);
   if (Object.keys(changed).length === 0) return { updated: false, changed: {} };

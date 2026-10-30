@@ -17,12 +17,12 @@ else bad('冲突未拦');
 if (checkConsistency({ draft: '今天天气不错', facts: ['你昨天去了北京'] }).pass === true) ok('无关 → 放行');
 else bad('无关被拦');
 
-if (checkClarity({ draft: 'a？b？', thought: { intent: 'answer' }, plan: { messages: ['a？b？'] } }).pass === false) ok('多问题 → 拦截');
-else bad('多问题未拦');
+if (checkClarity({ draft: 'a？b？', thought: { intent: 'answer' }, plan: { messages: ['a？b？'] } }).pass === true) ok('多问题不阻断');
+else bad('多问题误杀');
 if (checkClarity({ draft: '好的', thought: { intent: 'answer' }, plan: { messages: ['好的'] } }).pass === true) ok('短句 → 放行');
 else bad('短句被拦');
-if (checkClarity({ draft: 'x', thought: {}, plan: { messages: ['x'] } }).pass === false) ok('缺主意图 → 拦截');
-else bad('缺意图未拦');
+if (checkClarity({ draft: 'x', thought: {}, plan: { messages: ['x'] } }).pass === true) ok('缺主意图不单独阻断');
+else bad('缺意图误杀');
 
 if (checkAutonomy({ decision: { action: 'reply' } }).pass === true) ok('被动回复 → 放行');
 else bad('被动被拦');

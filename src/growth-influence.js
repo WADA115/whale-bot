@@ -76,6 +76,5 @@ export function previewInfluence(influence) {
     emotionWeight: { base: 3, now: Number(emotionWeightWithGrowth(3, influence.toneBias).toFixed(2)) },
     memoryBudget: { base: 500, now: memoryBudgetWithGrowth(500, influence.memoryWarmth) },
     stickerChance: { base: 0.22, now: Number(chanceWithGrowth(0.22, influence.expressiveness).toFixed(3)) },
-    chime: { base: 0.18, now: Number(chanceWithGrowth(0.18, influence.initiative).toFixed(3)) }
   };
 }

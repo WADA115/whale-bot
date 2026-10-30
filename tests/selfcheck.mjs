@@ -68,7 +68,7 @@ if (reg.status === 200) pass('普通账户登录 200');
 else fail('普通账户登录 ' + reg.status + ' ' + JSON.stringify(reg.body));
 
 const prof = await post('/api/profile', {
-  qq: '100200300', personaText: '测试人格：说话简短。', behavior: { groupTrigger: 'mention', chime: 0.4 },
+  qq: '100200300', personaText: '测试人格：说话简短。', behavior: { groupTrigger: 'mention' },
   trusted: ['123123123'], memory: [{ text: '测试记忆', tier: 'short' }]
 }, reg.cookie);
 if (prof.status === 200) pass('保存档案 200'); else fail('保存档案 ' + prof.status + ' ' + JSON.stringify(prof.body));

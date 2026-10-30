@@ -21,6 +21,7 @@ export function buildThinkerPrompt({ event = {}, thread = {}, roleHint = '', cfg
   "intent": "answer_question|join_chat|comfort|tease|clarify|ignore",
   "keyPoints": ["最多 4 条，每条不超过 40 字"],
   "emotion": { "valence": -1~1, "arousal": 0~1, "stance": "neutral|playful|serious|soft" },
+  "delivery": { "bubbles": 0, "length": "short|normal|long", "pacing": "single|burst", "reason": "为什么这样分条" },
   "constraints": ["最多 4 条，如：一句话、别解释梗、别用列表"],
   "confidence": 0~1
 }
@@ -47,6 +48,14 @@ export function parseThought(text) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
   const keyPoints = (Array.isArray(data.keyPoints) ? data.keyPoints : [])
     .map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, MAX_KEYPOINTS).map((x) => x.slice(0, 120));
+  const deliveryRaw = data.delivery && typeof data.delivery === 'object' ? data.delivery : {};
+  const bubbles = Math.max(0, Math.min(20, Math.round(Number(deliveryRaw.bubbles) || 0)));
+  const delivery = {
+    bubbles,
+    length: ['short', 'normal', 'long'].includes(deliveryRaw.length) ? deliveryRaw.length : 'normal',
+    pacing: ['single', 'burst'].includes(deliveryRaw.pacing) ? deliveryRaw.pacing : 'single',
+    reason: String(deliveryRaw.reason ?? '').slice(0, 80)
+  };
   const constraints = (Array.isArray(data.constraints) ? data.constraints : [])
     .map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 4).map((x) => x.slice(0, 80));
   const emo = data.emotion && typeof data.emotion === 'object' ? data.emotion : {};
@@ -55,6 +64,7 @@ export function parseThought(text) {
     target: String(data.target ?? '').slice(0, 40),
     intent: String(data.intent ?? 'ignore').slice(0, 30),
     keyPoints,
+    delivery,
     emotion: {
       valence: clamp(emo.valence, -1, 1),
       arousal: clamp(emo.arousal, 0, 1),
@@ -69,5 +79,27 @@ export async function think({ event, thread, roleHint = '', cfg = {}, ask, extra
   if (typeof ask !== 'function') return null;
   const { system, user } = buildThinkerPrompt({ event, thread, roleHint, cfg, extraContext });
   const out = await ask({ system, user });
-  return parseThought(out?.content ?? '');
+  const first = String(out?.content ?? '').trim();
+  let parsed = parseThought(first);
+  if (!parsed) {
+    const retry = await ask({
+      system: system + '\n\n上一次输出不是合法 JSON。只输出一个 JSON 对象。',
+      user
+    });
+    parsed = parseThought(String(retry?.content ?? '').trim());
+  }
+  if (!parsed) {
+    return {
+      shouldReply: true,
+      target: '',
+      intent: 'answer',
+      keyPoints: ['用一句话回应对方，别编造事实'],
+      delivery: { bubbles: 0, length: 'normal', pacing: 'single', reason: 'fallback' },
+      emotion: { valence: 0, arousal: 0.25, stance: 'neutral' },
+      constraints: ['简短', '口语'],
+      confidence: 0.2,
+      fallback: true
+    };
+  }
+  return parsed;
 }

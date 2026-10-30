@@ -10,12 +10,13 @@ import { EventEmitter } from 'node:events';
 const DEFAULT_TIMEOUT_MS = 15000;
 
 export class OneBotGateway extends EventEmitter {
-  constructor({ httpUrl, wsUrl, accessToken, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+  constructor({ httpUrl, wsUrl, accessToken, wsAccessToken, timeoutMs = DEFAULT_TIMEOUT_MS }) {
     super();
     this.kind = 'onebot';
     this.httpUrl = String(httpUrl ?? '').replace(/\/+$/, '');
     this.wsUrl = String(wsUrl ?? '');
     this.accessToken = accessToken ? String(accessToken) : '';
+    this.wsAccessToken = wsAccessToken ? String(wsAccessToken) : this.accessToken;
     this.timeoutMs = timeoutMs;
     this.ws = null;
     this.echoSeq = 0;
@@ -29,8 +30,8 @@ export class OneBotGateway extends EventEmitter {
     this.closed = false;
     return new Promise((resolve, reject) => {
       let settled = false;
-      const url = this.accessToken
-        ? `${this.wsUrl}${this.wsUrl.includes('?') ? '&' : '?'}access_token=${encodeURIComponent(this.accessToken)}`
+      const url = this.wsAccessToken
+        ? `${this.wsUrl}${this.wsUrl.includes('?') ? '&' : '?'}access_token=${encodeURIComponent(this.wsAccessToken)}`
         : this.wsUrl;
 
       let ws;
@@ -44,11 +45,13 @@ export class OneBotGateway extends EventEmitter {
 
       ws.addEventListener('open', () => {
         settled = true;
+        this.emit('open');
         this.emit('status', { connected: true });
         resolve();
       });
       ws.addEventListener('message', (ev) => this._onFrame(ev.data));
       ws.addEventListener('close', () => {
+        this.emit('close');
         this.emit('status', { connected: false });
         if (!settled) { settled = true; reject(new Error('WebSocket closed before open')); }
         this._scheduleReconnect();

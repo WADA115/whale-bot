@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { readSecret } from './secrets.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -47,7 +48,7 @@ function getHostConfig() {
   const c = getConfig();
   const httpUrl = (c.snowluma?.httpUrl ?? 'http://127.0.0.1:3000').replace(/\/+$/, '');
   const homeDir = c.snowluma?.homeDir ?? (c.snowluma?.launcherPath ? path.dirname(c.snowluma.launcherPath) : '');
-  return { httpUrl, homeDir, token: c.snowluma?.accessToken ?? '' };
+  return { httpUrl, homeDir, token: c.snowluma?.accessToken || readSecret(ROOT, 'snowlumaAccessToken') || '' };
 }
 
 async function gatewayInfo() {

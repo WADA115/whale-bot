@@ -124,7 +124,7 @@ export function splitByCjkSpaces(src) {
 }
 
 /** 把整段回复切成 1~N 个气泡；极短句不拆。 */
-export function splitReplyIntoBubbles(text, { maxBubbles = 5, maxLen = 40 } = {}) {
+export function splitReplyIntoBubbles(text, { maxBubbles = 20, maxLen = 40 } = {}) {
   const raw = String(text ?? '').trim();
   if (!raw) return [];
   const flat = raw.replace(/\r?\n+/g, ' ').replace(/\s{2,}/g, ' ').trim();

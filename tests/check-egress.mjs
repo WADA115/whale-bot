@@ -4,8 +4,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const file = path.join(root, 'src', 'bridge.js');
-const src = fs.readFileSync(file, 'utf8');
+const file = path.join(root, 'src', 'app.js');
+const generatedDir = path.join(root, 'src', 'runtime', 'generated');
+const generated = fs.existsSync(generatedDir)
+  ? fs.readdirSync(generatedDir).filter((f) => f.endsWith('.js')).map((f) => fs.readFileSync(path.join(generatedDir, f), 'utf8'))
+  : [];
+const src = [fs.readFileSync(file, 'utf8'), ...generated].join('\n');
+const runtimeSrc = fs.readFileSync(path.join(root, 'src', 'runtime', 'handle-incoming.js'), 'utf8');
 
 const checks = [];
 const add = (name, ok, detail = '') => checks.push({ name, ok, detail });
@@ -15,7 +20,7 @@ add('sendSpeakerPlan 走 Gateway', /async function sendSpeakerPlan[\s\S]{0,2000}
 add('runInitiative 走 Orchestrator', /async function runInitiative[\s\S]{0,1600}orchestrateDialog/.test(src));
 add('sendSystem 走 Gateway', /async function sendSystem[\s\S]{0,800}source: 'system'/.test(src));
 add('sendCommand 走 Gateway', /async function sendCommand[\s\S]{0,800}source: 'command'/.test(src));
-add('canary 私聊开关', src.includes('canaryPrivate'));
+add('canary 私聊开关', src.includes('canaryPrivate') || runtimeSrc.includes('canaryPrivate'));
 
 const directSends = (src.match(/await sendToQQ\(key/g) ?? []).length;
 const deliverCalls = (src.match(/deliverPrompt\(key/g) ?? []).length;

@@ -1,5 +1,10 @@
 // 统一的 chat 调用：给 gate/判断器/识图共用，不把 key 写进日志。
-export async function callChat({ baseURL, apiKey, model, system, user, maxTokens = 400, temperature = 0, timeoutMs = 15000, images = [] } = {}) {
+function timeoutSignal(signal, timeoutMs) {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+export async function callChat({ baseURL, apiKey, model, system, user, maxTokens = 400, temperature = 0, timeoutMs = 15000, images = [], signal = null, json = false } = {}) {
   if (!apiKey) throw new Error('no-api-key');
   const content = Array.isArray(images) && images.length
     ? [
@@ -14,13 +19,14 @@ export async function callChat({ baseURL, apiKey, model, system, user, maxTokens
       model,
       messages: [{ role: 'system', content: system }, { role: 'user', content }],
       max_tokens: maxTokens,
-      temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0
+      temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0,
+      ...(json ? { response_format: { type: 'json_object' } } : {})
     }),
-    signal: AbortSignal.timeout(timeoutMs)
+    signal: timeoutSignal(signal, timeoutMs)
   });
-  if (!res.ok) throw new Error('http ' + res.status);
-  const json = await res.json();
-  const msg = json?.choices?.[0]?.message ?? {};
+  if (!res.ok) { const detail = await res.text().catch(() => ''); throw new Error('http ' + res.status + (detail ? ': ' + detail.slice(0, 300) : '')); }
+  const data = await res.json();
+  const msg = data?.choices?.[0]?.message ?? {};
   return { content: String(msg.content ?? ''), reasoning: String(msg.reasoning_content ?? '') };
 }
 
@@ -38,7 +44,9 @@ export async function callOllama({
   maxTokens = 400,
   temperature = 0.3,
   timeoutMs = 60000,
-  numCtx = 8192
+  numCtx = 8192,
+  signal = null,
+  json = false
 } = {}) {
   if (!model) throw new Error('no-local-model');
   const endpoint = `${String(baseURL).replace(/\/+$/, '').replace(/\/v1$/, '')}/api/chat`;
@@ -50,22 +58,24 @@ export async function callOllama({
       { role: 'user', content: String(user ?? ''), ...(Array.isArray(images) && images.length ? { images: images.slice(0, 3) } : {}) }
     ],
     stream: false,
+    ...(json ? { format: 'json' } : {}),
+    ...(/^qwen3/i.test(String(model)) ? { think: false } : {}),
     options: { num_ctx: numCtx, num_predict: maxTokens, temperature }
   };
   const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs)
+    signal: timeoutSignal(signal, timeoutMs)
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     throw new Error('local http ' + res.status + (detail ? ': ' + detail.slice(0, 200) : ''));
   }
-  const json = await res.json();
+  const data = await res.json();
   return {
-    content: String(json?.message?.content ?? '').trim(),
-    reasoning: String(json?.message?.thinking ?? '')
+    content: String(data?.message?.content ?? '').trim(),
+    reasoning: String(data?.message?.thinking ?? '')
   };
 }
 
@@ -86,7 +96,7 @@ export async function callOllamaEmbed({
     signal: AbortSignal.timeout(timeoutMs)
   });
   if (!res.ok) throw new Error('local embed http ' + res.status);
-  const json = await res.json();
-  const list = Array.isArray(json?.embeddings) ? json.embeddings : [];
+  const data = await res.json();
+  const list = Array.isArray(data?.embeddings) ? data.embeddings : [];
   return list.map((v) => (Array.isArray(v) ? v.map(Number) : []));
 }

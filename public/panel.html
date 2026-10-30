@@ -1095,7 +1095,7 @@ function renderCards() {
   }).join('');
   const wd = `<div class="card">
     <div class="top"><span class="dot ${state.watchdog.alive ? 'on' : ''}"></span><span class="svc-name">守护</span><span class="svc-desc">面板内置</span></div>
-    <div class="port">心跳 ${state.watchdog.beatAge == null ? '—' : state.watchdog.beatAge + ' 秒前'} · 已重启 ${state.watchdog.restarts ?? 0} 次</div>
+    <div class="port">心跳 ${state.watchdog.beatAge == null ? '—' : state.watchdog.beatAge + ' 秒前'} · 已重启 ${state.watchdog.restarts ?? 0} 次 · 外部守护 ${state.watchdog.external ? '在线' : '离线'}</div>
     <div class="state ${state.watchdog.alive ? 'on' : ''}">${state.watchdog.alive ? '守护中' : '未运行'}</div>
     <div class="btns"><button onclick="act('start','watchdog')" title="启动外部守护（自动拉起挂掉的服务）">启动外部守护</button><button class="danger" onclick="act('stop','watchdog')" title="停止外部守护">停止</button></div>
   </div>`;

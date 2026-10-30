@@ -32,7 +32,7 @@ export function normalizeExecutionAction(raw = {}) {
   const messages = (Array.isArray(raw.messages) ? raw.messages : [])
     .map((m) => String(m ?? '').trim())
     .filter(Boolean)
-    .slice(0, 5);
+    .slice(0, 50);
   if (!messages.length) return { ok: false, error: 'no messages' };
   return {
     ok: true,
@@ -44,7 +44,8 @@ export function normalizeExecutionAction(raw = {}) {
       chat: String(raw.chat ?? ''),
       messages,
       replyTo: raw.replyTo != null ? String(raw.replyTo) : '',
-      delayMs: Array.isArray(raw.delayMs) ? raw.delayMs.slice(0, 5).map((n) => Math.max(0, Number(n) || 0)) : [],
+      atUserId: raw.atUserId != null ? String(raw.atUserId) : '',
+      delayMs: Array.isArray(raw.delayMs) ? raw.delayMs.slice(0, 50).map((n) => Math.max(0, Number(n) || 0)) : [],
       interject: raw.interject === true,
       expiresAt: Math.max(0, Number(raw.expiresAt) || 0),
       standards: raw.standards && typeof raw.standards === 'object' ? { pass: raw.standards.pass === true } : null,

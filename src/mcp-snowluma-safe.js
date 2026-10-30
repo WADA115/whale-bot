@@ -22,6 +22,7 @@ import { faceName, faceIdByName, searchFaces } from './qq-face.js';
 import { SENSITIVE_RE } from './sensitive.js';
 import { serializeModelData } from './qq-model-view.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
+import { readSecret } from './secrets.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -57,7 +58,7 @@ function getOneBotConfig() {
   const c = getConfig();
   return {
     httpUrl: (c.snowluma?.httpUrl ?? 'http://127.0.0.1:3000').replace(/\/+$/, ''),
-    token: c.snowluma?.accessToken ?? ''
+    token: c.snowluma?.accessToken || readSecret(ROOT, 'snowlumaAccessToken') || ''
   };
 }
 

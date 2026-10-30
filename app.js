@@ -417,6 +417,10 @@ function killPort(port) {
 
 function killWatchdog() {
   return new Promise((resolve) => {
+    try {
+      const pid = Number(fs.readFileSync(path.join(STATE, 'watchdog', 'watchdog.pid'), 'utf8'));
+      if (pid) spawn('taskkill', ['/F', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore' });
+    } catch {}
     spawn('powershell', [
       '-NoProfile', '-Command',
       "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { $_.CommandLine -like '*watchdog.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
@@ -459,8 +463,8 @@ async function start(target) {
     return { ok: true, msg: '正在启动桥接…' };
   }
   if (target === 'watchdog') {
-    runHiddenScript('start-watchdog.vbs');
-    log('启动守护（无窗口）');
+    spawnDetached(process.execPath, [path.join(ROOT, 'scripts', 'watchdog.mjs')], { env, cwd: ROOT });
+    log('启动守护（node watchdog）');
     return { ok: true, msg: '正在启动守护…' };
   }
   if (target === 'all') {
@@ -507,7 +511,7 @@ const PROFILE_DEFAULT = {
   personaText: '',
   model: '',
   personaName: '',
-  behavior: { groupTrigger: 'smart', chime: 0.18, expressionOn: true, stickerChance: 0.22, faceChance: 0.12, voiceReply: false },
+  behavior: { groupTrigger: 'smart', expressionOn: true, stickerChance: 0.22, faceChance: 0.12, voiceReply: false },
   trusted: [],
   memory: []
 };
@@ -673,9 +677,6 @@ const CFG_WHITELIST = {
     const ids = [...new Set(v.map(String).map((x) => x.trim()).filter((x) => /^\d{5,20}$/.test(x)))];
     return ids.slice(0, 200);
   },
-  'role.randomChimeProbability': (v) => {
-    const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= 1 ? n : null;
-  },
   'role.developers': (v) => {
     const list = Array.isArray(v) ? v : String(v ?? '').split(/[,，\s]+/);
     const out = [];
@@ -800,7 +801,6 @@ function collectConfig() {
     role: {
       groupTrigger: cfg.role?.groupTrigger ?? 'smart',
       developers: Array.isArray(cfg.role?.developers) ? cfg.role.developers : [],
-      chime: cfg.role?.randomChimeProbability ?? 0,
       expression: cfg.role?.expression ?? {},
       emotion: cfg.role?.emotion ?? {},
       reply: cfg.role?.reply ?? {},
@@ -1037,7 +1037,6 @@ async function status() {
     model: `${cfg.dsh?.model ?? ''} / ${cfg.dsh?.reasoningEffort ?? ''}`,
     switches: {
       trigger: cfg.role?.groupTrigger ?? '',
-      chime: cfg.role?.randomChimeProbability ?? 0,
       expression: cfg.role?.expression?.enabled !== false,
       stickerChance: cfg.role?.expression?.stickerChance ?? 0,
       safety: cfg.safety?.enabled !== false,
@@ -1462,11 +1461,10 @@ const server = http.createServer(async (req, res) => {
         }
       } catch {}
       const predictor = { flash: 0, pro: 0, total: 0 };
-      const counters = { turns: 0, replies: 0, standardsFail: 0, chime: 0, legacyBlocked: 0 };
+      const counters = { turns: 0, replies: 0, standardsFail: 0, legacyBlocked: 0 };
       for (const r of rows) {
         counters.turns += 1;
         if (r.action === 'reply' || r.trigger === 'speaker-live' || r.trigger === 'speaker-plan') counters.replies += 1;
-        if (r.action === 'chime') counters.chime += 1;
         if (r.trigger === 'predictor-shadow' && r.prediction?.route) {
           predictor.total += 1;
           predictor[r.prediction.route] = (predictor[r.prediction.route] ?? 0) + 1;
@@ -1586,7 +1584,6 @@ const server = http.createServer(async (req, res) => {
               personaChars: String(p.personaText ?? '').length,
               personaPreview: String(p.personaText ?? '').replace(/\s+/g, ' ').slice(0, 40),
               trigger: p.behavior?.groupTrigger ?? 'smart',
-              chime: p.behavior?.chime ?? 0.18,
               trusted: Array.isArray(p.trusted) ? p.trusted.length : 0,
               memory: Array.isArray(p.memory) ? p.memory.length : 0
             });
@@ -2024,7 +2021,6 @@ const server = http.createServer(async (req, res) => {
         const b = body.behavior;
         patch.behavior = {};
         if (['smart', 'mention', 'all'].includes(b.groupTrigger)) patch.behavior.groupTrigger = b.groupTrigger;
-        if (Number.isFinite(Number(b.chime))) patch.behavior.chime = Math.max(0, Math.min(1, Number(b.chime)));
         if (typeof b.expressionOn === 'boolean') patch.behavior.expressionOn = b.expressionOn;
         if (Number.isFinite(Number(b.stickerChance))) patch.behavior.stickerChance = Math.max(0, Math.min(1, Number(b.stickerChance)));
         if (Number.isFinite(Number(b.faceChance))) patch.behavior.faceChance = Math.max(0, Math.min(1, Number(b.faceChance)));
@@ -2256,7 +2252,6 @@ const server = http.createServer(async (req, res) => {
             personaChars: String(p.personaText ?? '').length,
             model: p.model || '',
             trigger: p.behavior?.groupTrigger ?? 'smart',
-            chime: p.behavior?.chime ?? 0.18
           }
         }));
       }

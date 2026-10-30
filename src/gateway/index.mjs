@@ -34,7 +34,7 @@ export function createGateway(cfg, log = console.log) {
     const httpUrl = gw.httpUrl || cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000';
     const wsUrl = gw.wsUrl || cfg.snowluma?.wsUrl || 'ws://127.0.0.1:3001';
     log(`[gateway] 使用标准 OneBot v11：http=${httpUrl} ws=${wsUrl}`);
-    return new OneBotGateway({ httpUrl, wsUrl, accessToken });
+    return new OneBotGateway({ httpUrl, wsUrl, accessToken, wsAccessToken: gw.wsAccessToken || cfg.snowluma?.wsAccessToken || undefined });
   }
 
   if (type !== 'snowluma') {

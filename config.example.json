@@ -13,7 +13,7 @@
     "enabled": true,
     "baseURL": "http://127.0.0.1:11434",
     "chatModel": "qwen3:4b",
-    "thinkerModel": "qwen3:8b",
+    "thinkerModel": "qwen3:4b",
     "visionModel": "qwen2.5vl:3b",
     "embeddingModel": "bge-m3",
     "numCtx": 8192
@@ -24,6 +24,13 @@
     "legacyDialogDisabled": true,
     "historyLimit": 30
   },
+  "knowledge": {
+    "enabled": false,
+    "dbPath": "",
+    "learningBlocks": true,
+    "topK": 6,
+    "contextBudget": 800
+  },
   "initiative": {
     "enabled": false,
     "intervalMs": 300000,
@@ -33,6 +40,12 @@
   },
   "role": {
     "maxInjectChars": 6000
+  },
+  "gateway": {
+    "type": "snowluma",
+    "httpUrl": "http://127.0.0.1:3000",
+    "wsUrl": "ws://127.0.0.1:3001",
+    "accessToken": ""
   },
   "snowluma": {
     "wsUrl": "ws://127.0.0.1:3001",

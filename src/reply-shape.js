@@ -4,14 +4,14 @@
 // 所以不配置时行为完全不变。
 
 export const REPLY_LIMITS = {
-  maxBubbles: { min: 1, max: 6 },
+  maxBubbles: { min: 1, max: 20 },
   maxChars: { min: 10, max: 300 },
   gapMinMs: { min: 200, max: 15000 },
   gapMaxMs: { min: 200, max: 15000 }
 };
 
 export const REPLY_DEFAULTS = {
-  maxBubbles: 5,
+  maxBubbles: 8,
   maxChars: 40,
   gapMinMs: 600,
   gapMaxMs: 1400

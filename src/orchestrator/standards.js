@@ -57,14 +57,8 @@ export function checkConsistency({ draft = '', facts = [], commitments = [] } = 
 export function checkClarity({ draft = '', thought = {}, plan = null } = {}) {
   const violations = [];
   const messages = Array.isArray(plan?.messages) ? plan.messages : (draft ? [draft] : []);
-  if (messages.length > 3) violations.push('气泡超过 3 条');
   const keyPoints = Array.isArray(thought?.keyPoints) ? thought.keyPoints : [];
   if (keyPoints.length > 4) violations.push('要点超过 4 条');
-  const questions = messages.join(' ').match(/[?？]/g)?.length ?? 0;
-  if (questions > 1) violations.push('一次问了多个问题');
-  if (!thought?.intent) violations.push('缺少主意图');
-  const all = messages.join(' ');
-  if (all.length > 220) violations.push('总长度超过 220 字');
   return { pass: violations.length === 0, violations, checked: 'clarity' };
 }
 

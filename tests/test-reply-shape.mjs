@@ -8,8 +8,8 @@ const bad = (m) => { console.log('  ❌ ' + m); fail += 1; };
 
 // ── 回复形态 ───────────────────────────────────────────────────────────
 const def = normalizeReplyShape({});
-if (def.maxBubbles === 5 && def.maxChars === 40 && def.gapMinMs === 600 && def.gapMaxMs === 1400) {
-  ok('默认值等于现有行为（5 条 / 40 字 / 600~1400ms）');
+if (def.maxBubbles === 8 && def.maxChars === 40 && def.gapMinMs === 600 && def.gapMaxMs === 1400) {
+  ok('默认值等于现有行为（8 条 / 40 字 / 600~1400ms）');
 } else {
   bad('默认值变了：' + JSON.stringify(def));
 }
