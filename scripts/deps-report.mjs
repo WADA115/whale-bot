@@ -19,7 +19,7 @@ const report = lines.join('\n') + '\n';
 if (process.argv.includes('--check')) {
   const target = path.join(root, 'docs', 'DEPENDENCIES.md');
   const current = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
-  if (current !== report) { console.error('❌ docs/DEPENDENCIES.md 与 package-lock 不一致'); process.exit(1); }
+  if (current.replace(/\r\n/g, '\n') !== report.replace(/\r\n/g, '\n')) { console.error('❌ docs/DEPENDENCIES.md 与 package-lock 不一致'); process.exit(1); }
   console.log('✅ 依赖报告一致');
 } else {
   fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
