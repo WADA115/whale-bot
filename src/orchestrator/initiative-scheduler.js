@@ -7,6 +7,7 @@ export function createInitiativeScheduler({
   intervalMs = 5 * 60 * 1000,
   idleMs = 30 * 60 * 1000,
   maxPerHour = 2,
+  quietHours = null,
   log = () => {},
   now = () => Date.now()
 } = {}) {
@@ -21,8 +22,19 @@ export function createInitiativeScheduler({
     return sentAt.length < maxPerHour;
   }
 
+  function inQuietHours(at = now()) {
+    if (!quietHours) return false;
+    const hour = new Date(at).getHours();
+    const start = Number(quietHours.start);
+    const end = Number(quietHours.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    if (start === end) return false;
+    return start < end ? (hour >= start && hour < end) : (hour >= start || hour < end);
+  }
+
   async function tick() {
     if (running) return { ok: false, reason: 'busy' };
+    if (inQuietHours()) return { ok: true, quiet: true, fired: [] };
     running = true;
     const fired = [];
     try {

@@ -870,6 +870,7 @@ function loadConfig() {
       intervalMs: 5 * 60 * 1000,
       idleMs: 30 * 60 * 1000,
       maxPerHour: 2,
+      quietHours: { start: 23, end: 8 },
       private: false,
       ...(file.initiative ?? {})
     },
@@ -1814,6 +1815,7 @@ process.on('exit', () => { for (const p of pluginList) { try { p.host?.kill?.();
   const memoryExtractAt = new Map(); // key -> 上次提取时间
   const lastInboundForMemory = new Map(); // key -> 本轮对方说的话（提取时用）
 const lastActivity = new Map(); // key -> 最后一条入站/出站时间（主动发言用）
+let initiativeScheduler = null;
 
   const lastCompressAt = new Map();
 
@@ -4571,6 +4573,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
             allowGroups: cfg.allow?.groups ?? [],
             allowPrivate: cfg.allow?.private ?? [],
             socialV2Paused: socialV2.paused,
+            initiative: initiativeScheduler?.stats?.() ?? null,
             // 上游健康只给操作者看：它包含网关诊断信息（good/hint），
             // 属于管理侧观测，不该进 QQ 会话里那个受限的智能体视图。
             snowluma: snowlumaHealthSnapshot(),
@@ -10248,6 +10251,10 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     if (!asks) return false;
     let roleHint = '';
     try { roleHint = currentRoleHint() || ''; } catch {}
+    let injection = null;
+    try {
+      injection = await composeInjection({ key, kind: key.startsWith('group:') ? 'group' : 'private', text: reason, cfg });
+    } catch {}
     const pipe = await orchestrateDialog({
       event: {
         chat: key,
@@ -10262,7 +10269,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       roleHint,
       cfg,
       asks,
-      context: buildDialogueContext(key)
+      context: buildDialogueContext(key, injection)
     });
     if (!pipe.plan) {
       log(`主动表达未产出 ${key}（stage=${pipe.stage}｜drive=${drive}）`);
@@ -10289,8 +10296,10 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       intervalMs: Number(ic.intervalMs) || 5 * 60 * 1000,
       idleMs: Number(ic.idleMs) || 30 * 60 * 1000,
       maxPerHour: Number(ic.maxPerHour) || 2,
+      quietHours: ic.quietHours ?? null,
       log
     });
+    initiativeScheduler = scheduler;
     scheduler.start();
     return scheduler;
   }
