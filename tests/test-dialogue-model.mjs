@@ -11,7 +11,7 @@ const ok = (m) => { console.log('  ✅ ' + m); pass += 1; };
 const bad = (m) => { console.log('  ❌ ' + m); fail += 1; };
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dialogue-'));
-const now = new Date('2026-10-30T01:00:00+08:00');
+const now = new Date();
 
 // events
 const e1 = appendEvent({ chat: 'group:1', sender: { id: 'u1', name: '甲' }, text: '题呢', at: ['你'] }, { dir });

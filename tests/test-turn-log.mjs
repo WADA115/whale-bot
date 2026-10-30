@@ -19,7 +19,10 @@ const rec = appendTurnLog({
 
 if (rec.chat === 'group:978815624' && rec.action === 'skip' && rec.gate.addressed === false) ok('写入字段');
 else bad('写入字段异常');
-if (turnLogFile(dir, now).endsWith('turns-2026-10-30.jsonl')) ok('按日期分文件');
+const y = now.getFullYear();
+const m = String(now.getMonth() + 1).padStart(2, '0');
+const d = String(now.getDate()).padStart(2, '0');
+if (turnLogFile(dir, now).endsWith(`turns-${y}-${m}-${d}.jsonl`)) ok('按日期分文件');
 else bad('日期文件异常');
 
 appendTurnLog({ turnId: 't2', chat: 'group:978815624', action: 'reply' }, { dir, now });
