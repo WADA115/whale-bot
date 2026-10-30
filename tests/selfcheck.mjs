@@ -9,8 +9,9 @@ function readDevKey() {
 }
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-const root = process.argv[2];          // E:\deepseek_qq.bot\qq-bridge
+const root = process.argv[2] || path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const base = 'http://127.0.0.1:3200';
 let fails = 0;
 const pass = (m) => console.log('  ✅ ' + m);
@@ -105,10 +106,10 @@ else fail('临时密码登录异常：' + tempLogin.status + ' ' + JSON.stringif
 const sameTemp = await post('/api/auth/change-password', { newPass: 'QqBot-Reset-2026' }, tempLogin.cookie);
 if (sameTemp.status === 400) pass('不能把新密码设成 QqBot-Reset-2026'); else fail('竟然允许设回 QqBot-Reset-2026！' + sameTemp.status);
 
-const changed = await post('/api/auth/change-password', { newPass: 'new123456' }, tempLogin.cookie);
+const changed = await post('/api/auth/change-password', { newPass: 'newpass123456' }, tempLogin.cookie);
 if (changed.status === 200) pass('设置新密码成功'); else fail('改密码失败：' + changed.status + ' ' + JSON.stringify(changed.body));
 
-const newLogin = await post('/api/auth/login', { mode: 'user', user: name, pass: 'new123456' });
+const newLogin = await post('/api/auth/login', { mode: 'user', user: name, pass: 'newpass123456' });
 if (newLogin.status === 200 && newLogin.body.mustChange === false) pass('新密码可登录，mustChange 已清');
 else fail('新密码登录异常：' + newLogin.status);
 
