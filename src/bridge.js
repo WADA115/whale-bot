@@ -2135,7 +2135,7 @@ const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制
       maxTokens: args.maxTokens,
       temperature: args.temperature,
       timeoutMs: args.timeoutMs || 60000,
-      numCtx: Number(local.numCtx) || 4096
+      numCtx: Number(local.numCtx) || 8192
     });
     const withLocal = async (label, primary, localCall) => {
       try {
@@ -10322,10 +10322,13 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     const images = [];
     for (const m of items) {
       try {
-        const buf = await safeFetchBuffer(String(m.url), 6 * 1024 * 1024);
+        const fetched = await safeFetchBuffer(String(m.url), 6 * 1024 * 1024);
+        const buf = fetched?.buffer;
         if (!buf?.length || !looksLikeImageBuffer(buf)) continue;
         images.push(buf.toString('base64'));
-      } catch {}
+      } catch (error) {
+        log('[vision] 图片下载失败：' + (error?.message ?? error));
+      }
     }
     // 本地视觉优先（Qwen2.5-VL 3B），失败再回 DSH 多模态。
     if (images.length && asks?.vision) {

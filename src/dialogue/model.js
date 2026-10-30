@@ -38,14 +38,15 @@ export async function callOllama({
   maxTokens = 400,
   temperature = 0.3,
   timeoutMs = 60000,
-  numCtx = 4096
+  numCtx = 8192
 } = {}) {
   if (!model) throw new Error('no-local-model');
   const endpoint = `${String(baseURL).replace(/\/+$/, '').replace(/\/v1$/, '')}/api/chat`;
+  const noThink = /^qwen3/i.test(String(model)) && !/no_think/i.test(String(system ?? ''));
   const body = {
     model,
     messages: [
-      ...(system ? [{ role: 'system', content: String(system) }] : []),
+      ...(system ? [{ role: 'system', content: String(system) + (noThink ? '\n/no_think' : '') }] : []),
       { role: 'user', content: String(user ?? ''), ...(Array.isArray(images) && images.length ? { images: images.slice(0, 3) } : {}) }
     ],
     stream: false,
@@ -57,7 +58,10 @@ export async function callOllama({
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs)
   });
-  if (!res.ok) throw new Error('local http ' + res.status);
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error('local http ' + res.status + (detail ? ': ' + detail.slice(0, 200) : ''));
+  }
   const json = await res.json();
   return {
     content: String(json?.message?.content ?? '').trim(),

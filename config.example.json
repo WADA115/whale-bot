@@ -16,7 +16,7 @@
     "thinkerModel": "qwen3:8b",
     "visionModel": "qwen2.5vl:3b",
     "embeddingModel": "bge-m3",
-    "numCtx": 4096
+    "numCtx": 8192
   },
   "dialogue": {
     "all": true,
