@@ -36,7 +36,6 @@ import { createPromptQueue } from './dsh/queue.js';
 import { appendWakeSnapshot, buildDeliveryContent, deliveryErrorText } from './dsh/deliver.js';
 import { deliverPromptNow as runDeliverPromptNow } from './dsh/deliver-run.js';
 import { clampLevel, autoEmotionLevel, emotionPrompt } from './emotion.js';
-import { pickKaomoji } from './kaomoji.js';
 import { readInfluence, emotionWeightWithGrowth, memoryBudgetWithGrowth, chanceWithGrowth } from './growth-influence.js';
 import { reviewNarrative } from './narrative-guard.js';
 import { guardIncomingText, buildPersonaAnchor } from './persona-guard.js';
@@ -47,7 +46,8 @@ import { formatRecentLine, formatCurrentLine } from './group-history.js';
 import { appendTurnLog } from './dialogue/turn-log.js';
 import { appendEvent } from './dialogue/events.js';
 import { orchestrateDialog } from './orchestrator/index.js';
-import { callChat } from './dialogue/model.js';
+import { createInitiativeScheduler } from './orchestrator/initiative-scheduler.js';
+import { callChat, callOllama, callOllamaEmbed } from './dialogue/model.js';
 import { createThreadStore } from './dialogue/thread-store.js';
 import { createExecutionGateway } from './execution/gateway.js';
 import { createTransport } from './execution/transport.js';
@@ -64,7 +64,8 @@ import { createContextEngine } from './context-engine.js';
 // 出站内容审核（最后一道闸）
 import { createContentFilter } from './content-filter.js';
 // 表达引擎：润色 / 情绪 / 自主配表情
-import { polishReply, createMood, pickSticker, pickFace, decideExtras } from './expression.js';
+import { createMood, pickSticker, pickFace, decideExtras } from './expression.js';
+import { pickKaomoji } from './kaomoji.js';
 // QQ 系统表情 id → 中文名（face 段没有可下载图片，只能靠名字表达）
 import { faceName, faceLabel } from './qq-face.js';
 // 视频理解：抽帧（当图片）+ 抽音轨（交给本地 ASR）
@@ -855,6 +856,23 @@ function loadConfig() {
     dialogue: {
       ...(file.dialogue ?? {})
     },
+    local: {
+      enabled: true,
+      baseURL: 'http://127.0.0.1:11434',
+      chatModel: 'qwen3:4b',
+      thinkerModel: 'qwen3:8b',
+      visionModel: 'qwen2.5vl:3b',
+      embeddingModel: 'bge-m3',
+      ...(file.local ?? {})
+    },
+    initiative: {
+      enabled: false,
+      intervalMs: 5 * 60 * 1000,
+      idleMs: 30 * 60 * 1000,
+      maxPerHour: 2,
+      private: false,
+      ...(file.initiative ?? {})
+    },
     slang: {
       enabled: true,
       extractMinMessages: 10,
@@ -1621,7 +1639,18 @@ async function runPluginHook(hookName, ctx) {
 
   // ── 记忆多租户 ────────────────────────────────────────────────────────────
 // 开发者：state/memory.json；普通用户：state/profiles/<用户名>/memory.json
-const memoryStore = createMemoryStore({ stateDir: STATE_DIR, log });
+const memoryStore = createMemoryStore({
+  stateDir: STATE_DIR,
+  log,
+  embed: async (texts) => {
+    if (cfg.local?.enabled === false || !cfg.local?.baseURL) return [];
+    return callOllamaEmbed({
+      baseURL: cfg.local.baseURL,
+      model: cfg.local.embeddingModel || 'bge-m3',
+      input: texts
+    });
+  }
+});
 let activeMemoryOwner = 'developer';   // 当前这条消息该读写谁的记忆
 /** 把所有 memory.xxx() 调用转发给"当前身份"的记忆库，旧代码不用改。 */
 const memory = new Proxy({}, {
@@ -1784,6 +1813,7 @@ process.on('exit', () => { for (const p of pluginList) { try { p.host?.kill?.();
   process.on('exit', () => { try { memory.flush(); } catch {} });
   const memoryExtractAt = new Map(); // key -> 上次提取时间
   const lastInboundForMemory = new Map(); // key -> 本轮对方说的话（提取时用）
+const lastActivity = new Map(); // key -> 最后一条入站/出站时间（主动发言用）
 
   const lastCompressAt = new Map();
 
@@ -2091,29 +2121,84 @@ const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制
     const gateModel = smart.model || 'deepseek-flash';
     const thinkModel = cfg.dialogue?.thinker?.model || 'deepseek-v4-pro';
     const speakModel = cfg.dialogue?.speaker?.model || 'deepseek-flash';
+    const local = cfg.local ?? {};
+    const localOn = local.enabled !== false && !!local.baseURL;
+    const localBase = String(local.baseURL || 'http://127.0.0.1:11434');
+    const localChat = (model, args) => callOllama({
+      baseURL: localBase,
+      model,
+      system: args.system,
+      user: args.user,
+      images: Array.isArray(args.images) ? args.images : [],
+      maxTokens: args.maxTokens,
+      temperature: args.temperature,
+      timeoutMs: args.timeoutMs || 60000,
+      numCtx: Number(local.numCtx) || 4096
+    });
+    const withLocal = async (label, primary, localCall) => {
+      try {
+        return await primary();
+      } catch (error) {
+        if (!localOn) throw error;
+        log(`[local] ${label} DeepSeek 失败，切本地：${error?.message ?? error}`);
+        return await localCall();
+      }
+    };
     return {
-      gate: ({ system, user }) => callChat({ baseURL, apiKey, model: gateModel, system, user, maxTokens: 300 }),
-      thinker: ({ system, user }) => callChat({
-        baseURL, apiKey, model: thinkModel, system, user,
-        maxTokens: Number(cfg.dialogue?.thinker?.maxTokens) || 700,
-        timeoutMs: Number(cfg.dialogue?.thinker?.timeoutMs) || 20000
-      }),
-      speaker: ({ system, user }) => callChat({
-        baseURL, apiKey, model: speakModel, system, user,
-        maxTokens: Number(cfg.dialogue?.speaker?.maxTokens) || 400,
-        temperature: Number(cfg.dialogue?.speaker?.temperature) || 0.8,
-        timeoutMs: Number(cfg.dialogue?.speaker?.timeoutMs) || 15000
-      }),
-      vision: ({ system, user, images }) => callChat({
-        baseURL,
-        apiKey,
-        model: cfg.dsh?.model || 'deepseek-flash',
-        system,
-        user,
-        images: Array.isArray(images) ? images : [],
-        maxTokens: 400,
-        timeoutMs: 20000
-      })
+      gate: ({ system, user }) => withLocal(
+        'gate',
+        () => callChat({ baseURL, apiKey, model: gateModel, system, user, maxTokens: 300 }),
+        () => localChat(local.chatModel || 'qwen3:4b', { system, user, maxTokens: 300, temperature: 0.2 })
+      ),
+      thinker: ({ system, user }) => withLocal(
+        'thinker',
+        () => callChat({
+          baseURL, apiKey, model: thinkModel, system, user,
+          maxTokens: Number(cfg.dialogue?.thinker?.maxTokens) || 700,
+          timeoutMs: Number(cfg.dialogue?.thinker?.timeoutMs) || 20000
+        }),
+        () => localChat(local.thinkerModel || 'qwen3:8b', {
+          system, user,
+          maxTokens: Number(cfg.dialogue?.thinker?.maxTokens) || 700,
+          temperature: 0.4
+        })
+      ),
+      speaker: ({ system, user }) => withLocal(
+        'speaker',
+        () => callChat({
+          baseURL, apiKey, model: speakModel, system, user,
+          maxTokens: Number(cfg.dialogue?.speaker?.maxTokens) || 400,
+          temperature: Number(cfg.dialogue?.speaker?.temperature) || 0.8,
+          timeoutMs: Number(cfg.dialogue?.speaker?.timeoutMs) || 15000
+        }),
+        () => localChat(local.thinkerModel || 'qwen3:8b', {
+          system, user,
+          maxTokens: Number(cfg.dialogue?.speaker?.maxTokens) || 400,
+          temperature: Number(cfg.dialogue?.speaker?.temperature) || 0.8
+        })
+      ),
+      vision: async ({ system, user, images }) => {
+        const list = Array.isArray(images) ? images : [];
+        if (localOn && list.length) {
+          try {
+            return await localChat(local.visionModel || 'qwen2.5vl:3b', {
+              system, user, images: list, maxTokens: 300, temperature: 0.1, timeoutMs: 90000
+            });
+          } catch (error) {
+            log(`[local] vision 失败，回 DSH：${error?.message ?? error}`);
+          }
+        }
+        return callChat({
+          baseURL,
+          apiKey,
+          model: cfg.dsh?.model || 'deepseek-flash',
+          system,
+          user,
+          images: list,
+          maxTokens: 400,
+          timeoutMs: 20000
+        });
+      }
     };
   }
 
@@ -2637,6 +2722,50 @@ const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制
     return moods.get(k);
   }
 
+  /** 表情/颜文字：只产出 Gateway action，不直接发 QQ。 */
+  async function maybeSendExpression(key, text) {
+    try {
+      const exCfg = cfg.role?.expression ?? {};
+      if (exCfg.enabled === false || exCfg.auto === false) return;
+      const state = extraState.get(key) ?? {};
+      const mood = moodFor(key).get();
+      const plan = decideExtras({ text, mood, cfg, recent: state });
+      let expression = null;
+      if (plan.sticker && stickerEntries.length) {
+        const pick = pickSticker(stickerEntries, text);
+        if (pick) expression = { kind: 'sticker', value: String(pick.id) };
+      }
+      if (!expression && plan.face) {
+        const faceId = pickFace(text, mood);
+        if (faceId != null) expression = { kind: 'face', value: String(faceId) };
+      }
+      if (!expression && plan.kaomoji) {
+        const kao = pickKaomoji({ text, mood, exclude: state.recentKaomoji ?? [] });
+        if (kao) expression = { kind: 'kaomoji', value: kao };
+      }
+      if (!expression) return;
+      const result = await executionGateway.execute({
+        actionId: key + ':expr:' + Date.now() + ':' + crypto.randomBytes(3).toString('hex'),
+        source: 'system',
+        type: 'expression',
+        chat: key,
+        expression,
+        reason: 'expression'
+      });
+      if (!result.ok) return;
+      const now = Date.now();
+      extraState.set(key, {
+        ...state,
+        ...(expression.kind === 'sticker' ? { lastStickerAt: now } : {}),
+        ...(expression.kind === 'face' ? { lastFaceAt: now } : {}),
+        ...(expression.kind === 'kaomoji' ? { lastKaomojiAt: now, recentKaomoji: [...(state.recentKaomoji ?? []), expression.value].slice(-8) } : {})
+      });
+      log(`[express] Gateway 发送 ${expression.kind}（${key}）`);
+    } catch (error) {
+      log('[express] 表情动作失败（忽略）：' + (error?.message ?? error));
+    }
+  }
+
   /** 发一个小黄脸（face 段，不依赖 CDN，必达）。 */
   async function sendFaceSegment(key, faceId) {
     const [kind, id] = String(key).split(':');
@@ -2646,70 +2775,10 @@ const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制
   }
 
   /**
-   * 文字发完之后的"补一刀"：按内容与心情决定是否再发个表情。
-   * 全程 try/catch —— 补发失败绝不影响已经发出去的文字。
-   */
-  async function maybeSendExtras(key, text) {
-    try {
-      const state = extraState.get(key) ?? {};
-      const mood = moodFor(key).get();
-      let cfgForExtras = cfg;
-      try {
-        const gi = cfg.role?.growth?.speak === false ? null : readInfluence(STATE_DIR);
-        if (gi) {
-          const ex = cfg.role?.expression ?? {};
-          cfgForExtras = {
-            ...cfg,
-            role: {
-              ...cfg.role,
-              expression: {
-                ...ex,
-                stickerChance: chanceWithGrowth(ex.stickerChance ?? 0.22, gi.expressiveness),
-                faceChance: chanceWithGrowth(ex.faceChance ?? 0.12, gi.expressiveness),
-                kaomojiChance: chanceWithGrowth(ex.kaomojiChance ?? 0.12, gi.expressiveness)
-              }
-            }
-          };
-        }
-      } catch {}
-      const plan = decideExtras({ text, mood, cfg: cfgForExtras, recent: state });
-      if (plan.sticker && stickerEntries.length) {
-        const pick = pickSticker(stickerEntries, text);
-        if (pick) {
-          await sendStickerV2(key, pick.id);
-          extraState.set(key, { ...state, lastStickerAt: Date.now() });
-          log("[express] 补发表情包「" + (pick.desc || pick.id) + "」（心情 " + mood + "）");
-          return;
-        }
-      }
-      if (plan.face) {
-        const faceId = pickFace(text, mood);
-        if (faceId != null) {
-          await sendFaceSegment(key, faceId);
-          extraState.set(key, { ...state, lastFaceAt: Date.now() });
-          log("[express] 补发小黄脸 id=" + faceId + "（心情 " + mood + "）");
-          return;
-        }
-      }
-      if (plan.kaomoji) {
-        const kao = pickKaomoji({ text, mood, exclude: state.recentKaomoji ?? [] });
-        if (kao) {
-          await sendSystem(key, kao, 'kaomoji');
-          const recent = [...(state.recentKaomoji ?? []), kao].slice(-8);
-          extraState.set(key, { ...state, lastKaomojiAt: Date.now(), recentKaomoji: recent });
-          log("[express] 补发颜文字 " + kao + "（心情 " + mood + "）");
-        }
-      }
-    } catch (error) {
-      log("[express] 补发表情失败（忽略）：" + (error?.message ?? error));
-    }
-  }
-
-  /**
    * 把这条消息需要的背景拼成一段：记忆（设定/长短期/摘要）+ 语境（群聊）+ 心情。
    * 三段各自兜底，任何一段抛错都只是少一段提示，不影响回复。
    */
-  function composeInjection({ key, kind, text, cfg }) {
+  async function composeInjection({ key, kind, text, cfg }) {
     const out = { memory: '', context: '', mood: '', recall: '', emotion: '' };
     // 权重先算好（记忆预算 / 情绪强度都要用；放在 try 外，避免某段失败后变量不可见）
     let weights = { memory: 3, emotion: 3, auto: true };
@@ -2747,6 +2816,10 @@ const lastChimeAt = new Map();    // key -> 上次随机插话时间（只限制
         cfg
       });
       out.memory = blocks.always + blocks.relevant;
+      try {
+        const sem = await memory.buildSemanticBlock(text, { key, limit: 3, maxChars: 600 });
+        if (sem) out.memory += '\n' + sem;
+      } catch {}
     } catch (error) {
       log(`[memory] 注入失败（忽略）：${error?.message ?? error}`);
     }
@@ -4523,7 +4596,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
           const kind = qKey.startsWith('group:') ? 'group' : 'private';
           const previewCfg = loadConfig();
           let out = {};
-          try { out = composeInjection({ key: qKey, kind, text: qText, cfg: previewCfg }); } catch (error) { out = { error: String(error?.message ?? error) }; }
+          try { out = await composeInjection({ key: qKey, kind, text: qText, cfg: previewCfg }); } catch (error) { out = { error: String(error?.message ?? error) }; }
           const guard = guardIncomingText(qText);
           sendJson({
             ok: true, key: qKey, owner: qOwner, text: qText,
@@ -10195,9 +10268,31 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       log(`主动表达未产出 ${key}（stage=${pipe.stage}｜drive=${drive}）`);
       return false;
     }
-    const ok = await sendSpeakerPlan(key, pipe.plan, cfg);
+    const ok = await sendSpeakerPlan(key, pipe.plan, cfg, pipe.trace?.standards?.pass === true);
     if (ok) log(`主动表达已发送 ${key}（${reason}）`);
     return ok;
+  }
+
+  function startInitiativeScheduler() {
+    const ic = cfg.initiative ?? {};
+    if (ic.enabled !== true) return null;
+    const chats = (cfg.allow?.groups ?? []).map((id) => `group:${id}`);
+    if (ic.private === true && cfg.ownerQQ) chats.push(`private:${cfg.ownerQQ}`);
+    if (!chats.length) return null;
+    const scheduler = createInitiativeScheduler({
+      listChats: () => chats,
+      idleMsFor: (key) => {
+        const t = lastActivity.get(key);
+        return t ? Date.now() - t : Infinity;
+      },
+      run: (key, reason) => runInitiative(key, cfg, reason),
+      intervalMs: Number(ic.intervalMs) || 5 * 60 * 1000,
+      idleMs: Number(ic.idleMs) || 30 * 60 * 1000,
+      maxPerHour: Number(ic.maxPerHour) || 2,
+      log
+    });
+    scheduler.start();
+    return scheduler;
   }
 
   async function fetchGroupHistoryLines(groupId, limit = 30) {
@@ -10212,9 +10307,32 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     }).filter(Boolean).join('\n');
   }
 
-  async function describeImages(key, mediaList) {
+  async function describeImages(key, mediaList, asks) {
     const items = (Array.isArray(mediaList) ? mediaList : []).filter((m) => m && m.kind === 'image' && m.url).slice(0, 3);
     if (!items.length) return '';
+    const images = [];
+    for (const m of items) {
+      try {
+        const buf = await safeFetchBuffer(String(m.url), 6 * 1024 * 1024);
+        if (!buf?.length || !looksLikeImageBuffer(buf)) continue;
+        images.push(buf.toString('base64'));
+      } catch {}
+    }
+    // 本地视觉优先（Qwen2.5-VL 3B），失败再回 DSH 多模态。
+    if (images.length && asks?.vision) {
+      try {
+        const out = await asks.vision({
+          system: '你在帮 QQ 机器人看图。只描述图片里真实可见的内容：人物/物体/场景/文字/表情。看不清就说看不清，不要猜，不要编。80 字以内。只输出描述。',
+          user: '描述这张图片。',
+          images
+        });
+        const text = String(out?.content ?? '').trim();
+        if (text) return text.slice(0, 500);
+      } catch (error) {
+        log('[local] 本地识图失败，回 DSH：' + (error?.message ?? error));
+      }
+    }
+    if (!images.length) return '';
     let sessionId = '';
     try {
       sessionId = await ensureSession(key);
@@ -10229,7 +10347,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
           visionWaiters.delete(sessionId);
           visionCollectors.delete(sessionId);
           resolve('');
-        }, 25000);
+        }, 60000);
         visionWaiters.set(sessionId, { resolve, timer });
         api.sessions.prompt({ sessionId, mode: 'queue', content }).catch(() => {
           clearTimeout(timer);
@@ -10287,6 +10405,23 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       const ok = await auditAndSend(chat, msg);
       if (!ok) throw new Error('audit-blocked');
     },
+    sendExpression: async (chat, action) => {
+      const ex = action.expression ?? {};
+      if (ex.kind === 'sticker') {
+        await sendStickerV2(chat, ex.value);
+        return;
+      }
+      if (ex.kind === 'face') {
+        await sendFaceSegment(chat, Number(ex.value));
+        return;
+      }
+      if (ex.kind === 'kaomoji') {
+        const ok = await auditAndSend(chat, ex.value);
+        if (!ok) throw new Error('audit-blocked');
+        return;
+      }
+      throw new Error('unsupported expression: ' + ex.kind);
+    },
     now: () => Date.now(),
     log: (m) => log(m)
   });
@@ -10317,23 +10452,10 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     return result.ok === true;
   }
 
-  async function sendSpeakerPlan(key, plan, cfg) {
-    let messages = Array.isArray(plan?.messages) ? plan.messages : [];
+  async function sendSpeakerPlan(key, plan, cfg, standardsPass = false) {
+    const messages = Array.isArray(plan?.messages) ? plan.messages : [];
     if (!messages.length) return false;
-    // 恢复旧表达层：润色 + 插件 onReply（失败不影响发送）
-    try {
-      messages = messages.map((m) => { try { return polishReply(m) || m; } catch { return m; } }).filter(Boolean);
-    } catch {}
-    try {
-      const rewritten = await runPluginHook('onReply', { key, text: messages.join(' '), cfg });
-      if (rewritten && typeof rewritten.text === 'string' && rewritten.text.trim()) {
-        messages = [rewritten.text.trim()];
-        log(`[plugin] 回复已被插件改写（${key}）`);
-      }
-    } catch (error) {
-      log(`[plugin] onReply 异常（忽略）：${error?.message ?? error}`);
-    }
-    if (!messages.length) return false;
+    // 四标准之后不再改写正文：插件只保留入站/只读钩子。
     const delays = messages.slice(0, -1).map((_, i) => {
       const d = Number(plan.delayMs?.[i]);
       return Number.isFinite(d) && d >= 0 ? d : randInt(
@@ -10348,7 +10470,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       chat: key,
       messages,
       delayMs: delays,
-      standards: { pass: true },
+      standards: { pass: standardsPass === true },
       reason: 'speaker-plan'
     });
     if (!result.ok) {
@@ -10374,7 +10496,8 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
     try { ctxEngine.markAnswered(key, {}); } catch {}
     void maybeExtractMemory(key, lastInboundForMemory.get(key) ?? '', joined, cfg);
     void compressConversation(key, cfg);
-    void maybeSendExtras(key, joined);
+    void maybeSendExpression(key, joined);
+    lastActivity.set(key, Date.now());
     recordDialogueTurn({ chat: key, trigger: 'speaker-live', sender: '', text: '', action: 'reply', contract: { action: 'reply', replyTo: plan?.replyTo || '', reason: 'speaker-live' }, spoken: plan, reason: 'speaker-live' });
     return true;
   }
@@ -12236,8 +12359,8 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
       // 其余 / 开头内容照常发给 DSH（DSH 的斜杠命令原样执行，如 /model）
     }
 
-    // 二代仿真模式（reserved2）：唤醒调度
-    if (currentMode === 'reserved2') {
+    // 二代仿真模式（reserved2）：仅当未启用统一对话时走旧唤醒；启用后直接进新链路
+    if (currentMode === 'reserved2' && cfg.dialogue?.all !== true) {
       const sender = kind === 'group' ? (event.sender?.card || event.sender?.nickname || String(event.user_id)) : '私聊';
       appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, event.message_id ?? event.msg_id ?? null, mediaList, event.user_id ?? null, extractForwardIds(event.message ?? []));
       // 二代同样收集群聊黑话学习素材（AI 自主提交之外，桥接仍自动提取高频陌生词）
@@ -12330,50 +12453,33 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
 
     // 背景注入（合并版）：记忆 + 语境 + 心情一次拼好。
     // 任何一段失败都只降级为空串，绝不影响这条消息本身发不发得出去。
-    const injection = composeInjection({ key, kind, text: plainContent || textContent, cfg, owner: activeMemoryOwner });
+    const injection = await composeInjection({ key, kind, text: plainContent || textContent, cfg, owner: activeMemoryOwner });
     const memoryBlock = injection.memory;
     const recallBlock = injection.recall || '';
     const emotionBlock = injection.emotion || '';
     const ctxBlock = injection.context;
     const moodBlock = injection.mood;
     lastInboundForMemory.set(key, plainContent || textContent);
+    lastActivity.set(key, Date.now());
     try { maybeLearnSlangFromQuestion(key, plainContent || textContent, event.sender?.nickname || event.user_id); } catch {}
-    const personaAnchor = cfg.role?.personaAnchor !== false ? buildPersonaAnchor() : '';
     const guarded = guardIncomingText(textContent);
-    const promptContent = guarded.text;
     if (guarded.truncated) log('[persona] 输入过长已截断：' + guarded.chars + ' 字 / ' + guarded.lines + ' 行');
-
-    const promptText = buildClosedAgentPrompt({
-      roleHint,
-      personaAnchor,
-      sessionTokenLine,
-      ctxBlock,
-      moodBlock,
-      emotionBlock,
-      memoryBlock,
-      recallBlock,
-      groupContextBlock,
-      isOwner,
-      isDeveloper,
-      kind,
-      senderName: event.sender?.card || event.sender?.nickname || String(event.user_id),
-      content: promptContent,
-      mediaHint: mediaHintFor(key, messageRef, mediaList)
-    });
 
     appendActivity(`${key} ${isOwner ? '管理员' : '群友'} ${event.sender?.nickname || event.user_id}：${textContent.slice(0, 80)}`);
 
     // 仿真群友模式：reserved 走状态机（观望/活跃/试探/退场）
     if (cfg.dialogue?.useSpeaker === true && (
+      cfg.dialogue?.all === true ||
       (cfg.dialogue?.canaryGroups ?? []).map(String).includes(String(id)) ||
       (kind === 'private' && cfg.dialogue?.canaryPrivate !== false && !/^\s*[/#]/.test(String(plainContent || '')))
     )) {
       try {
         const asks = dialogueAsks(cfg);
-        if (asks) {
+        if (!asks) { log('新链路没有可用模型，沉默 ' + key); return; }
+        {
           const roleHintForPipe = (() => { try { return currentRoleHint() || ''; } catch { return ''; } })();
           if (mediaList.some((m) => m.kind === 'image')) {
-            const desc = await describeImages(key, mediaList);
+            const desc = await describeImages(key, mediaList, asks);
             if (desc) {
               injection.context = [injection.context, '【当前图片】' + desc].filter(Boolean).join('\n');
               log(`已识图 ${key}：${desc.slice(0, 40)}`);
@@ -12424,13 +12530,13 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
           }
           if (pipe.plan) {
             log(`新链路发送 ${key}（${pipe.plan.messages.length} 条｜${pipe.trace?.totalMs ?? '?'}ms）`);
-            await sendSpeakerPlan(key, pipe.plan, cfg);
+            await sendSpeakerPlan(key, pipe.plan, cfg, pipe.trace?.standards?.pass === true);
             return;
           }
           log(`新链路未产出 ${key}（stage=${pipe.stage}｜standards=${pipe.trace?.standards?.pass}）`);
           return;
         }
-      } catch (error) { log('新链路失败，回退旧链路: ' + (error?.message ?? error)); }
+      } catch (error) { log('新链路失败，沉默（不再回退旧 DSH）: ' + (error?.message ?? error)); return; }
     }
     if (isSocialEnabled()) {
       const sender = kind === 'group' ? (event.sender?.card || event.sender?.nickname || String(event.user_id)) : '私聊';
@@ -13424,6 +13530,7 @@ const STEER_LEASE_MS = 10 * 60 * 1000; // 超过 10 分钟视为丢失 turn/end�
   startDshWatch();
   startSnowlumaWatch();
   startConsoleServer();
+  startInitiativeScheduler();
 
   await pumpMux();
 }

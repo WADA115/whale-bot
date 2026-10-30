@@ -86,24 +86,24 @@ else fail('普通账户读记忆异常：' + mem.status);
 if (!JSON.stringify(memJson).includes('小鲸鱼')) pass('普通账户读不到开发者的记忆');
 else fail('普通账户读到了开发者的记忆！');
 
-// 4. 密码重置规则（临时密码 00000 + 强制改密）
+// 4. 密码重置规则（临时密码 QqBot-Reset-2026 + 强制改密）
 const devForReset = await post('/api/auth/login', { mode: 'dev', devKey: readDevKey() });
 const devCookie = devForReset.cookie;
 console.log('\n[4] 密码重置规则');
 // 本机自用：允许直接重置（不需要先失败）
 const direct = await post('/api/auth/reset', { user: name }, reg.cookie);
-if (direct.status === 200 && direct.body.tempPassword === '00000') pass('可直接重置（无需失败记录）');
+if (direct.status === 200 && direct.body.tempPassword === 'QqBot-Reset-2026') pass('可直接重置（无需失败记录）');
 else fail('直接重置失败：' + direct.status + ' ' + JSON.stringify(direct.body).slice(0, 80));
 const resetRes = await post('/api/auth/reset', { user: name }, reg.cookie);
-if (resetRes.status === 200 && resetRes.body.tempPassword === '00000') pass('失败后重置 → 临时密码 00000');
+if (resetRes.status === 200 && resetRes.body.tempPassword === 'QqBot-Reset-2026') pass('失败后重置 → 临时密码 QqBot-Reset-2026');
 else fail('重置异常：' + JSON.stringify(resetRes.body).slice(0, 100));
 
-const tempLogin = await post('/api/auth/login', { mode: 'user', user: name, pass: '00000' });
+const tempLogin = await post('/api/auth/login', { mode: 'user', user: name, pass: 'QqBot-Reset-2026' });
 if (tempLogin.status === 200 && tempLogin.body.mustChange === true) pass('临时密码可登录，且 mustChange=true');
 else fail('临时密码登录异常：' + tempLogin.status + ' ' + JSON.stringify(tempLogin.body).slice(0, 80));
 
-const sameTemp = await post('/api/auth/change-password', { newPass: '00000' }, tempLogin.cookie);
-if (sameTemp.status === 400) pass('不能把新密码设成 00000'); else fail('竟然允许设回 00000！' + sameTemp.status);
+const sameTemp = await post('/api/auth/change-password', { newPass: 'QqBot-Reset-2026' }, tempLogin.cookie);
+if (sameTemp.status === 400) pass('不能把新密码设成 QqBot-Reset-2026'); else fail('竟然允许设回 QqBot-Reset-2026！' + sameTemp.status);
 
 const changed = await post('/api/auth/change-password', { newPass: 'new123456' }, tempLogin.cookie);
 if (changed.status === 200) pass('设置新密码成功'); else fail('改密码失败：' + changed.status + ' ' + JSON.stringify(changed.body));
@@ -112,11 +112,11 @@ const newLogin = await post('/api/auth/login', { mode: 'user', user: name, pass:
 if (newLogin.status === 200 && newLogin.body.mustChange === false) pass('新密码可登录，mustChange 已清');
 else fail('新密码登录异常：' + newLogin.status);
 
-const tempGone = await post('/api/auth/login', { mode: 'user', user: name, pass: '00000' });
+const tempGone = await post('/api/auth/login', { mode: 'user', user: name, pass: 'QqBot-Reset-2026' });
 if (tempGone.status === 401) pass('临时密码已失效（401）'); else fail('临时密码仍可用！' + tempGone.status);
 
 const devReset = await post('/api/profiles/manage', { op: 'reset-password', user: name }, devCookie);
-if (devReset.status === 200 && devReset.body.tempPassword === '00000') pass('开发者本地重置（无需失败记录）');
+if (devReset.status === 200 && devReset.body.tempPassword === 'QqBot-Reset-2026') pass('开发者本地重置（无需失败记录）');
 else fail('开发者重置失败：' + devReset.status + ' ' + JSON.stringify(devReset.body).slice(0, 80));
 
 // 5. 内容与文件

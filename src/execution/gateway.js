@@ -3,6 +3,7 @@ import { normalizeExecutionAction } from './action.js';
 
 export function createExecutionGateway({
   sendOne,
+  sendExpression = null,
   audit = async () => true,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   now = () => Date.now(),
@@ -32,6 +33,20 @@ export function createExecutionGateway({
       if (action.standards?.pass !== true) return { ok: false, reason: 'standards', actionId: action.actionId };
     }
     if (action.expiresAt && now() > action.expiresAt) return { ok: false, reason: 'expired', actionId: action.actionId };
+
+    if (action.type === 'expression') {
+      if (typeof sendExpression !== 'function') return { ok: false, reason: 'no-expression-handler', actionId: action.actionId };
+      if (signal?.aborted || isCancelled(chat, currentEpoch)) return { ok: false, reason: 'cancelled', actionId: action.actionId };
+      const allowed = await audit('[expression]', action);
+      if (!allowed) return { ok: false, reason: 'audit', actionId: action.actionId };
+      try {
+        await sendExpression(chat, action);
+        return { ok: true, expression: true, actionId: action.actionId };
+      } catch (error) {
+        log('expression send failed: ' + (error?.message ?? error));
+        return { ok: false, reason: 'send', error: error?.message ?? String(error), actionId: action.actionId };
+      }
+    }
 
     const sent = [];
     for (let i = 0; i < action.messages.length; i += 1) {

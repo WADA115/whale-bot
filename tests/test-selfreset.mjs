@@ -26,7 +26,7 @@ console.log('① 注册:', (await post('/api/auth/register', { user, pass: 'orig
 const reset = await post('/api/auth/reset', { user });
 console.log('② 直接重置（没失败过、没找管理员）:', reset.status, reset.body.msg);
 
-const temp = await post('/api/auth/login', { mode: 'user', user, pass: '00000' });
+const temp = await post('/api/auth/login', { mode: 'user', user, pass: 'QqBot-Reset-2026' });
 console.log('③ 临时密码登录:', temp.status, '| mustChange:', temp.body.mustChange);
 
 const changed = await post('/api/auth/change-password', { newPass: 'brandnew123' }, temp.cookie);

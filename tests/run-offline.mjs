@@ -70,6 +70,8 @@ const pick = [
   'check-egress.mjs',
   'check-panel.mjs',
   'check-repo-hygiene.mjs',
+  'test-initiative-gateway.mjs',
+  'test-memory-semantic.mjs',
   'test-dsh-detect.mjs'
 ].filter((f) => fs.existsSync(path.join(dir, f)));
 

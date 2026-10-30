@@ -42,7 +42,7 @@ console.log('① 建普通账户:', (await post('/api/auth/accounts', { user, pa
 const reset = await post('/api/profiles/manage', { op: 'reset-password', user }, dev.cookie);
 console.log('③ 本地管理重置:', reset.status, reset.body.msg);
 
-const temp = await post('/api/auth/login', { mode: 'user', user, pass: '00000' });
+const temp = await post('/api/auth/login', { mode: 'user', user, pass: 'QqBot-Reset-2026' });
 console.log('④ 临时密码登录:', temp.status, '| mustChange:', temp.body.mustChange);
 
 const changed = await post('/api/auth/change-password', { newPass: 'fresh123456' }, temp.cookie);

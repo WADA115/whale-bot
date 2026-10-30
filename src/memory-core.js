@@ -104,11 +104,13 @@ function migrate(raw) {
   return state;
 }
 
-export function createMemoryCore({ file, log = () => {} } = {}) {
+export function createMemoryCore({ file, log = () => {}, embed = null } = {}) {
   let state = emptyState();
   let dirty = false;
   let saveTimer = null;
   let idSeq = 0;
+  let embedFn = typeof embed === 'function' ? embed : null;
+  const embedCache = new Map();
 
   function newId(prefix) {
     idSeq += 1;
@@ -229,6 +231,87 @@ export function createMemoryCore({ file, log = () => {} } = {}) {
       if (top.length) scheduleSave();
     }
     return top;
+  }
+
+  function cosine(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || !a.length || a.length !== b.length) return 0;
+    let dot = 0; let na = 0; let nb = 0;
+    for (let i = 0; i < a.length; i += 1) {
+      const x = Number(a[i]) || 0;
+      const y = Number(b[i]) || 0;
+      dot += x * y; na += x * x; nb += y * y;
+    }
+    return na && nb ? dot / Math.sqrt(na * nb) : 0;
+  }
+
+  async function embedMany(texts) {
+    if (!embedFn || !texts.length) return [];
+    const out = [];
+    for (let i = 0; i < texts.length; i += 16) {
+      const chunk = texts.slice(i, i + 16);
+      const vectors = await embedFn(chunk);
+      if (!Array.isArray(vectors) || vectors.length !== chunk.length) throw new Error('embedding count mismatch');
+      out.push(...vectors);
+    }
+    return out;
+  }
+
+  /** 语义召回：bge-m3 向量，失败返回空数组，不影响关键词检索。 */
+  async function semanticSearch(query, { tier = 'both', limit = 4, key = '', markAccess = true, minScore = 0.55 } = {}) {
+    if (!embedFn || !String(query ?? '').trim()) return [];
+    const bags = [];
+    if (tier === 'long' || tier === 'both') bags.push(['long', state.long.facts]);
+    if (tier === 'short' || tier === 'both') bags.push(['short', state.short.facts]);
+    const all = [];
+    for (const [tierName, list] of bags) for (const f of list) all.push({ tier: tierName, fact: f });
+    if (!all.length) return [];
+    const cacheKey = (f) => String(f.id ?? normText(f.text));
+    const missing = [];
+    for (const { fact } of all) {
+      const k = cacheKey(fact);
+      if (!embedCache.has(k)) missing.push({ k, text: fact.text });
+    }
+    const queryVec = (await embedMany([String(query)]))[0] ?? [];
+    if (!queryVec.length) return [];
+    if (missing.length) {
+      const vecs = await embedMany(missing.map((m) => m.text));
+      missing.forEach((m, i) => { if (vecs[i]?.length) embedCache.set(m.k, vecs[i]); });
+    }
+    const scored = [];
+    for (const { tier: tierName, fact } of all) {
+      const vec = embedCache.get(cacheKey(fact));
+      if (!vec?.length) continue;
+      let score = cosine(queryVec, vec);
+      if (key && fact.key === key) score += 0.04;
+      if (score < minScore) continue;
+      scored.push({ fact, tier: tierName, score });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const top = scored.slice(0, limit);
+    if (markAccess) {
+      for (const s of top) { s.fact.accessCount = (s.fact.accessCount ?? 0) + 1; s.fact.lastAccessAt = Date.now(); }
+      if (top.length) scheduleSave();
+    }
+    return top;
+  }
+
+  async function buildSemanticBlock(query, { key = '', limit = 3, maxChars = 700 } = {}) {
+    try {
+      const hits = await semanticSearch(query, { key, limit });
+      if (!hits.length) return '';
+      const lines = hits.map((h) => `- [${h.tier === 'long' ? '长期' : '短期'}] ${h.fact.text}`);
+      let block = `【语义相关】\n${lines.join('\n')}\n`;
+      if (block.length > maxChars) block = block.slice(0, maxChars) + '\n';
+      return block;
+    } catch (error) {
+      log(`[mem] 语义检索失败（忽略）：${error?.message ?? error}`);
+      return '';
+    }
+  }
+
+  function setEmbedder(fn) {
+    embedFn = typeof fn === 'function' ? fn : null;
+    embedCache.clear();
   }
 
   function similarFacts(text, { tier = 'both', limit = 3, minSimilarity = 0.35 } = {}) {
@@ -505,6 +588,7 @@ export function createMemoryCore({ file, log = () => {} } = {}) {
     addFact, addKeyword, addSetting,
     addVault, listVault, removeVault, matchVault, pickRecall,
     search, similarFacts, matchKeywords,
+    semanticSearch, buildSemanticBlock, setEmbedder,
     mergeFacts, dedupeLocal, promoteFact, promoteKeyword, autoPromote, pruneShortTerm,
     setSummary, getSummary,
     buildPromptBlocks,
@@ -542,7 +626,7 @@ export function safeUserName(name) {
  *   owner = { user: '张三' }     → <stateDir>/profiles/张三/memory.json
  * 不传 owner 一律当开发者，避免默认走到别人目录。
  */
-export function createMemoryStore({ stateDir, log = () => {} } = {}) {
+export function createMemoryStore({ stateDir, log = () => {}, embed = null } = {}) {
   const cache = new Map();
 
   function ownerKey(owner) {
@@ -584,7 +668,7 @@ export function createMemoryStore({ stateDir, log = () => {} } = {}) {
     const key = ownerKey(owner);
     if (cache.has(key)) return cache.get(key);
     const target = pathFor(owner);
-    const core = createMemoryCore({ file: target, log });
+    const core = createMemoryCore({ file: target, log, embed });
     if (key.startsWith('user:')) migrateLegacyProfile(key.slice(5), core);
     cache.set(key, core);
     return core;

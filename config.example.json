@@ -9,6 +9,28 @@
     "authPrefix": "Bearer",
     "allowRemote": false
   },
+  "local": {
+    "enabled": true,
+    "baseURL": "http://127.0.0.1:11434",
+    "chatModel": "qwen3:4b",
+    "thinkerModel": "qwen3:8b",
+    "visionModel": "qwen2.5vl:3b",
+    "embeddingModel": "bge-m3",
+    "numCtx": 4096
+  },
+  "dialogue": {
+    "all": true,
+    "useSpeaker": true,
+    "legacyDialogDisabled": true,
+    "historyLimit": 30
+  },
+  "initiative": {
+    "enabled": false,
+    "intervalMs": 300000,
+    "idleMs": 1800000,
+    "maxPerHour": 2,
+    "private": false
+  },
   "role": {
     "maxInjectChars": 6000
   },
